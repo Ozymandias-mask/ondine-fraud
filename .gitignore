@@ -1,0 +1,24 @@
+# Secrets : ne jamais versionner le vrai fichier .env
+.env
+*.pem
+*.key
+
+# Données générées (plusieurs Go) : produites par le simulateur, jamais versionnées
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

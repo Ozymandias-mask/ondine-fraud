@@ -1,0 +1,21 @@
+# Configuration des outils qualité partagée par tous les modules du dépôt.
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/W : PEP 8, F : erreurs Pyflakes, I : ordre des imports, N : nommage PEP 8,
+# B : bugs probables, UP : syntaxe moderne, S : sécurité (Bandit), D : docstrings.
+select = ["E", "W", "F", "I", "N", "B", "UP", "S", "D"]
+ignore = [
+    "D203", "D213",  # conventions de docstring incompatibles entre elles
+    "S311",          # random non cryptographique : voulu pour de la simulation
+    "D401",          # « mode impératif » : règle pensée pour l'anglais, docstrings en français
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "S310", "D", "E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["simulator/tests"]
+addopts = "-q"

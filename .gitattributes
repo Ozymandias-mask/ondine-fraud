@@ -1,0 +1,6 @@
+# Les scripts shell exécutés dans les conteneurs Linux doivent garder des fins de ligne LF,
+# même quand le dépôt est cloné sous Windows (sinon : « /bin/sh^M: not found »).
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.sql  text eol=lf
+*.py   text eol=lf
