@@ -1,0 +1,41 @@
+# Règles d'alerte : visibles dans Prometheus (onglet Alerts) et Grafana.
+groups:
+  - name: plateforme
+    rules:
+      - alert: ComposantIndisponible
+        expr: up == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.job }} ({{ $labels.instance }}) ne répond plus"
+          description: "La cible n'est plus joignable depuis 1 minute."
+
+      - alert: StockageRedondancePerdue
+        expr: count(up{job="seaweedfs", component="volume"} == 1) < 2
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Un serveur de volumes S3 est arrêté : les données ne sont plus répliquées"
+
+  - name: flux
+    rules:
+      - alert: EchecsLivraisonKafka
+        expr: sum(rate(sim_delivery_errors_total[5m])) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "Des messages ne sont plus livrés à Kafka"
+
+      - alert: DebitInferieurALaCible
+        expr: sim_actual_rate_tps < 0.8 * sim_target_rate_tps
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Débit envoyé inférieur à 80 % de la cible ({{ $value | humanize }} tx/s)"
+
+      - alert: LatenceLivraisonElevee
+        expr: histogram_quantile(0.95, sum by (le) (rate(sim_delivery_latency_seconds_bucket[5m]))) > 0.5
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Latence d'acquittement Kafka p95 > 500 ms"

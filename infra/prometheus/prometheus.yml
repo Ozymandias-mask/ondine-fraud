@@ -1,0 +1,26 @@
+# Collecte des métriques toutes les 15 s. Ajouter ici les nouveaux composants
+# (pipelines, API de scoring...) : aucune autre modification n'est nécessaire.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: simulator
+    static_configs:
+      - targets: ["simulator-stream:8000"]
+
+  - job_name: seaweedfs
+    static_configs:
+      - targets: ["seaweed-master:9324"]
+        labels: {component: master}
+      - targets: ["seaweed-volume-1:9325", "seaweed-volume-2:9325"]
+        labels: {component: volume}
+      - targets: ["seaweed-filer:9326"]
+        labels: {component: filer}

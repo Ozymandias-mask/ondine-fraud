@@ -1,0 +1,358 @@
+# =============================================================================
+# Ondine Bank - plateforme de données pour la détection de fraude (environnement local)
+#
+# Démarrage :  python scripts/generate_env.py   (une seule fois : crée .env avec des secrets forts)
+#              docker compose up -d
+# Simulateur : docker compose --profile stream up -d simulator-stream
+#              docker compose --profile generate run --rm simulator-batch
+#
+# Principes appliqués :
+#  - redondance : Kafka 3 nœuds (réplication 3, min.insync 2), stockage objet répliqué sur 2 volumes ;
+#  - sécurité   : secrets hors du code (.env), ports exposés uniquement sur 127.0.0.1,
+#                 authentification sur toutes les interfaces, chiffrement des données au repos (S3) ;
+#  - exploitabilité : healthchecks, redémarrage automatique, limites mémoire, logs bornés.
+# =============================================================================
+
+name: ondine
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:4.3.1
+  restart: unless-stopped
+  logging: *default-logging
+  networks: [ondine]
+  deploy:
+    resources:
+      limits:
+        memory: 1536M
+  healthcheck:
+    test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null 2>&1"]
+    interval: 20s
+    timeout: 15s
+    retries: 10
+    start_period: 40s
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:29093,2@kafka-2:29093,3@kafka-3:29093
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+  # Durabilité : un message est acquitté quand il est écrit sur au moins 2 des 3 brokers.
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"   # les topics sont déclarés explicitement (kafka-init)
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_HEAP_OPTS: "-Xms768m -Xmx768m"
+
+services:
+  # ---------------------------------------------------------------- Kafka (flux temps réel)
+  kafka-1:
+    <<: *kafka-common
+    hostname: kafka-1
+    ports: ["127.0.0.1:9092:9092"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:29093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:19092,EXTERNAL://localhost:9092
+    volumes: [kafka-1-data:/var/lib/kafka/data]
+
+  kafka-2:
+    <<: *kafka-common
+    hostname: kafka-2
+    ports: ["127.0.0.1:9093:9093"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9093,CONTROLLER://:29093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:19092,EXTERNAL://localhost:9093
+    volumes: [kafka-2-data:/var/lib/kafka/data]
+
+  kafka-3:
+    <<: *kafka-common
+    hostname: kafka-3
+    ports: ["127.0.0.1:9094:9094"]
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9094,CONTROLLER://:29093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:19092,EXTERNAL://localhost:9094
+    volumes: [kafka-3-data:/var/lib/kafka/data]
+
+  kafka-init:
+    image: apache/kafka:4.3.1
+    networks: [ondine]
+    restart: "no"
+    depends_on:
+      kafka-1: {condition: service_healthy}
+      kafka-2: {condition: service_healthy}
+      kafka-3: {condition: service_healthy}
+    volumes: ["./infra/kafka/create-topics.sh:/create-topics.sh:ro"]
+    entrypoint: ["/bin/bash", "/create-topics.sh"]
+    environment:
+      BOOTSTRAP: kafka-1:19092,kafka-2:19092,kafka-3:19092
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.5.0
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      kafka-1: {condition: service_healthy}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    environment:
+      KAFKA_CLUSTERS_0_NAME: ondine-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:19092,kafka-2:19092,kafka-3:19092
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: ${KAFKA_UI_USER}
+      SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD}
+
+  # ---------------------------------------------------------------- Stockage objet S3 (data lake)
+  # SeaweedFS : 1 maître, 2 serveurs de volumes (chaque objet est écrit sur les 2 : réplication "001"),
+  # 1 filer qui expose l'API S3 et chiffre les données avant de les écrire (AES-256-GCM).
+  seaweed-master:
+    image: chrislusf/seaweedfs:4.47
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    command: >
+      master -ip=seaweed-master -ip.bind=0.0.0.0 -port=9333 -mdir=/data
+      -defaultReplication=001 -volumeSizeLimitMB=1024 -metricsPort=9324
+    volumes: [seaweed-master-data:/data]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9333/cluster/status > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  seaweed-volume-1:
+    image: chrislusf/seaweedfs:4.47
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    command: >
+      volume -ip=seaweed-volume-1 -ip.bind=0.0.0.0 -port=8081 -master=seaweed-master:9333
+      -dir=/data -max=0 -dataCenter=dc1 -rack=rack1 -minFreeSpace=5 -metricsPort=9325
+    volumes: [seaweed-volume-1-data:/data]
+    depends_on:
+      seaweed-master: {condition: service_healthy}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  seaweed-volume-2:
+    image: chrislusf/seaweedfs:4.47
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    command: >
+      volume -ip=seaweed-volume-2 -ip.bind=0.0.0.0 -port=8082 -master=seaweed-master:9333
+      -dir=/data -max=0 -dataCenter=dc1 -rack=rack1 -minFreeSpace=5 -metricsPort=9325
+    volumes: [seaweed-volume-2-data:/data]
+    depends_on:
+      seaweed-master: {condition: service_healthy}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  seaweed-filer:
+    image: chrislusf/seaweedfs:4.47
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:8333:8333"]
+    entrypoint: ["/bin/sh", "/scripts/start-filer.sh"]
+    volumes:
+      - seaweed-filer-data:/data
+      - ./infra/seaweedfs/start-filer.sh:/scripts/start-filer.sh:ro
+    environment:
+      S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY}
+      S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY}
+      S3_INGESTION_ACCESS_KEY: ${S3_INGESTION_ACCESS_KEY}
+      S3_INGESTION_SECRET_KEY: ${S3_INGESTION_SECRET_KEY}
+      S3_PIPELINE_ACCESS_KEY: ${S3_PIPELINE_ACCESS_KEY}
+      S3_PIPELINE_SECRET_KEY: ${S3_PIPELINE_SECRET_KEY}
+      S3_ML_ACCESS_KEY: ${S3_ML_ACCESS_KEY}
+      S3_ML_SECRET_KEY: ${S3_ML_SECRET_KEY}
+    depends_on:
+      seaweed-volume-1: {condition: service_started}
+      seaweed-volume-2: {condition: service_started}
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8888/ > /dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  seaweed-init:
+    image: chrislusf/seaweedfs:4.47
+    networks: [ondine]
+    restart: "no"
+    depends_on:
+      seaweed-filer: {condition: service_healthy}
+    volumes: ["./infra/seaweedfs/create-buckets.sh:/create-buckets.sh:ro"]
+    entrypoint: ["/bin/sh", "/create-buckets.sh"]
+
+  # ---------------------------------------------------------------- PostgreSQL (données opérationnelles, audit, gouvernance)
+  postgres:
+    image: postgres:17.11-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:5432:5432"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_DB: ondine
+      # Mots de passe hachés en SCRAM-SHA-256 ; sommes de contrôle pour détecter la corruption.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+      PG_INGESTION_PASSWORD: ${PG_INGESTION_PASSWORD}
+      PG_API_PASSWORD: ${PG_API_PASSWORD}
+      PG_ANALYST_PASSWORD: ${PG_ANALYST_PASSWORD}
+      PG_AIRFLOW_PASSWORD: ${PG_AIRFLOW_PASSWORD}
+      PG_MLFLOW_PASSWORD: ${PG_MLFLOW_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d ondine"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres-backup:
+    image: postgres:17.11-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_ADMIN_USER}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      BACKUP_RETENTION_DAYS: 7
+      BACKUP_INTERVAL_S: 86400
+    volumes:
+      - ./infra/postgres/backup.sh:/backup.sh:ro
+      - postgres-backups:/backups
+    entrypoint: ["/bin/sh", "/backup.sh"]
+
+  # ---------------------------------------------------------------- Supervision
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:9090:9090"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./infra/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  grafana:
+    image: grafana/grafana:13.2.1
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # ---------------------------------------------------------------- Simulateur (profils à la demande)
+  simulator-stream:
+    build: ./simulator
+    image: ondine/simulator:local
+    profiles: [stream]
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      kafka-init: {condition: service_completed_successfully}
+    environment:
+      SIM_CONTROL_TOKEN: ${SIM_CONTROL_TOKEN}
+    command: ["stream", "--bootstrap", "kafka-1:19092,kafka-2:19092,kafka-3:19092",
+              "--rate", "300", "--metrics-port", "8000"]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  simulator-batch:
+    build: ./simulator
+    image: ondine/simulator:local
+    profiles: [generate]
+    restart: "no"
+    networks: [ondine]
+    volumes: ["./data:/data"]
+    command: ["batch", "--preset", "full", "--output", "/data/landing", "--workers", "4"]
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+
+networks:
+  ondine:
+    name: ondine
+
+volumes:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
+  seaweed-master-data:
+  seaweed-volume-1-data:
+  seaweed-volume-2-data:
+  seaweed-filer-data:
+  postgres-data:
+  postgres-backups:
+  prometheus-data:
+  grafana-data:
