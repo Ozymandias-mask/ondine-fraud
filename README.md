@@ -1,0 +1,98 @@
+# Ondine Bank – Détection de fraude en temps réel
+
+Projet de fin d'études (RNCP38777, Architecte en intelligence artificielle).
+**Ondine Bank** est une néobanque fictive (1 million de clients) qui veut détecter la fraude
+aux paiements avant l'autorisation, en expliquant chaque décision et en respectant le RGPD,
+la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
+
+> Toutes les données sont synthétiques. Aucune personne ni aucun établissement réel n'est concerné.
+
+## État d'avancement
+
+| Étape | Contenu | État |
+|---|---|---|
+| 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait** |
+| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | à venir |
+| 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | à venir |
+| 4. Plans écrits | Gouvernance, infrastructure, pipeline | à venir |
+
+## Architecture actuelle
+
+```
+ Simulateur ──batch──▶ data/landing (CSV, JSON, e-mails)  ──▶ [pipelines, étape 2] ──▶ S3 : bronze / silver / gold
+     │
+     └──stream──▶ Kafka (3 brokers, réplication 3) ──▶ [scoring temps réel, étape 3]
+
+ PostgreSQL : audit (journal en ajout seul), gouvernance (registre RGPD, consentements, droits)
+ Prometheus + Grafana : métriques et alertes de tous les composants
+```
+
+| Service | Rôle | Adresse locale | Redondance / sécurité |
+|---|---|---|---|
+| `kafka-1..3` | flux temps réel | `localhost:9092-9094` | 3 brokers KRaft, réplication 3, `min.insync.replicas=2` |
+| `kafka-ui` | exploration des topics | http://localhost:8080 | connexion par identifiant |
+| `seaweed-*` | stockage objet S3 (data lake) | http://localhost:8333 | 2 serveurs de volumes (chaque objet en 2 copies), chiffrement AES-256-GCM, identités par usage |
+| `postgres` | audit, gouvernance, bases Airflow / MLflow | `localhost:5432` | SCRAM-SHA-256, sommes de contrôle, rôles au moindre privilège |
+| `postgres-backup` | sauvegarde quotidienne vérifiée | volume `postgres-backups` | rétention 7 jours |
+| `prometheus` | métriques, règles d'alerte | http://localhost:9090 | rétention 15 jours |
+| `grafana` | tableaux de bord | http://localhost:3000 | connexion obligatoire, pas d'inscription |
+| `simulator-stream` | flux de transactions | http://localhost:8000/health | API de pilotage protégée par jeton |
+
+Tous les ports sont liés à `127.0.0.1` : rien n'est exposé sur le réseau local.
+
+## Prérequis
+
+- Windows 10/11 avec **Docker Desktop** (moteur WSL2) et **Git** ; Python 3.11+ pour les scripts.
+- 32 Go de RAM recommandés (la stack utilise jusqu'à ~8 Go, la génération complète ~10 Go de plus pendant ~15 min).
+- Disque : ~8 Go d'images, ~7 Go pour la zone d'arrivée brute, puis le data lake.
+- Dans Docker Desktop > Settings > Resources : allouer au moins 16 Go de mémoire à WSL.
+
+## Démarrage
+
+```powershell
+git clone <dépôt> ondine-fraud
+cd ondine-fraud
+
+# 1. Secrets : crée .env avec des mots de passe aléatoires (une seule fois)
+python scripts/generate_env.py
+
+# 2. Plateforme
+docker compose up -d
+docker compose ps          # kafka-init et seaweed-init doivent finir en « Exited (0) »
+
+# 3. Historique de 12 mois (~15 min)
+docker compose --profile generate run --rm simulator-batch
+
+# 4. Flux temps réel
+docker compose --profile stream up -d simulator-stream
+```
+
+Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafana :
+**Ondine > Ondine - Flux temps réel et plateforme**.
+
+## Arborescence
+
+```
+.
+├── docker-compose.yml          plateforme complète (profils : stream, generate)
+├── .env.example                modèle des secrets (le vrai .env n'est jamais versionné)
+├── scripts/generate_env.py     génération de secrets forts
+├── infra/
+│   ├── kafka/                  création des topics
+│   ├── seaweedfs/              démarrage S3 (identités, chiffrement), création des buckets
+│   ├── postgres/               rôles, schémas audit et gouvernance, sauvegardes
+│   ├── prometheus/             collecte et règles d'alerte
+│   └── grafana/                source de données et tableau de bord provisionnés
+├── simulator/                  générateur de données (voir simulator/README.md)
+└── data/                       données générées (hors Git)
+```
+
+## Dépannage
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| `/bin/sh^M: not found` | fins de ligne Windows sur les scripts | `git config core.autocrlf input`, puis recloner (le dépôt force LF via `.gitattributes`) |
+| Kafka redémarre en boucle | mémoire WSL insuffisante | augmenter la mémoire allouée à WSL |
+| `Variable manquante : S3_...` | `.env` absent | `python scripts/generate_env.py` |
+| Mots de passe refusés après régénération de `.env` | les volumes gardent les anciens | `docker compose down -v` (efface les données) puis redémarrer |
+| Génération interrompue | arrêt du PC, manque de mémoire | relancer avec `--resume` : seules les parts manquantes sont refaites |
