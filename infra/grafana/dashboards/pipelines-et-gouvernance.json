@@ -906,7 +906,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "auto",
-            "spanNulls": false
+            "spanNulls": false,
+            "insertNulls": 172800000
           }
         },
         "overrides": []
@@ -960,7 +961,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "auto",
-            "spanNulls": false
+            "spanNulls": false,
+            "insertNulls": 172800000
           }
         },
         "overrides": []
@@ -1014,7 +1016,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "auto",
-            "spanNulls": false
+            "spanNulls": false,
+            "insertNulls": 172800000
           }
         },
         "overrides": []
