@@ -68,3 +68,28 @@ def copy_to_parquet(
 def sql_literal(value: str) -> str:
     """Version publique de l'échappement des littéraux SQL."""
     return _sql_literal(value)
+
+
+def enable_pseudonymisation(con: duckdb.DuckDBPyConnection, key: str) -> None:
+    """Déclare la fonction SQL `pseudo(valeur)` : hachage SHA-256 avec clé secrète.
+
+    Le même identifiant donne toujours le même pseudonyme (les jointures et les features
+    restent possibles), mais sans la clé il est impossible de retrouver la valeur d'origine
+    ni de recalculer le pseudonyme d'une valeur connue (attaque par dictionnaire).
+    La clé est passée en paramètre lié : elle n'apparaît dans aucun texte de requête ni log.
+    """
+    con.execute("SET VARIABLE pseudo_key = ?", [key])
+    con.execute(
+        "CREATE OR REPLACE TEMP MACRO pseudo(v) AS CASE WHEN v IS NULL THEN NULL "
+        "ELSE left(sha256(getvariable('pseudo_key') || '|' || CAST(v AS VARCHAR)), 32) END"
+    )
+
+
+def month_glob(settings: Settings, layer: str, dataset: str, year: int, month: int) -> str:
+    """Motif des fichiers Parquet d'un mois (partitionnement year=/month=)."""
+    return settings.uri(layer, dataset, f"year={year}", f"month={month:02d}", "*.parquet")
+
+
+def exists(con: duckdb.DuckDBPyConnection, pattern: str) -> bool:
+    """Vrai si au moins un fichier correspond au motif (local ou S3)."""
+    return bool(con.execute("SELECT count(*) FROM glob(?)", [pattern]).fetchone()[0])

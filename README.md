@@ -12,7 +12,7 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | Étape | Contenu | État |
 |---|---|---|
 | 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait, validé sur le PC** |
-| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : ingestion bronze livrée |
+| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : ingestion bronze validée, silver livrée |
 | 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | à venir |
 | 4. Plans écrits | Gouvernance, infrastructure, pipeline | à venir |
 
