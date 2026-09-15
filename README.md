@@ -11,7 +11,7 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 
 | Étape | Contenu | État |
 |---|---|---|
-| 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait** |
+| 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait, validé sur le PC** |
 | 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | à venir |
 | 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | à venir |
 | 4. Plans écrits | Gouvernance, infrastructure, pipeline | à venir |
@@ -43,8 +43,8 @@ Tous les ports sont liés à `127.0.0.1` : rien n'est exposé sur le réseau loc
 ## Prérequis
 
 - Windows 10/11 avec **Docker Desktop** (moteur WSL2) et **Git** ; Python 3.11+ pour les scripts.
-- 32 Go de RAM recommandés (la stack utilise jusqu'à ~8 Go, la génération complète ~10 Go de plus pendant ~15 min).
-- Disque : ~8 Go d'images, ~7 Go pour la zone d'arrivée brute, puis le data lake.
+- 32 Go de RAM recommandés (la stack utilise jusqu'à ~8 Go, la génération complète ~10 Go de plus pendant ~5 min).
+- Disque : ~8 Go d'images, 6,4 Go pour la zone d'arrivée brute, jusqu'à ~20 Go pour Kafka (rétention bornée), puis le data lake.
 - Dans Docker Desktop > Settings > Resources : allouer au moins 16 Go de mémoire à WSL.
 
 ## Démarrage
@@ -60,11 +60,17 @@ python scripts/generate_env.py
 docker compose up -d
 docker compose ps          # kafka-init et seaweed-init doivent finir en « Exited (0) »
 
-# 3. Historique de 12 mois (~15 min)
+# 3. Historique de 12 mois (~5 min, 50 M de transactions)
 docker compose --profile generate run --rm simulator-batch
 
-# 4. Flux temps réel
+# 4. Flux temps réel (l'arrêter quand il ne sert pas : docker compose stop simulator-stream)
 docker compose --profile stream up -d simulator-stream
+```
+
+### Mettre à jour le dépôt à partir d'un bundle livré
+
+```powershell
+git pull ..\ondine-fraud-historique.bundle main
 ```
 
 Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafana :
@@ -96,3 +102,4 @@ Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafan
 | `Variable manquante : S3_...` | `.env` absent | `python scripts/generate_env.py` |
 | Mots de passe refusés après régénération de `.env` | les volumes gardent les anciens | `docker compose down -v` (efface les données) puis redémarrer |
 | Génération interrompue | arrêt du PC, manque de mémoire | relancer avec `--resume` : seules les parts manquantes sont refaites |
+| Disque qui se remplit | flux temps réel resté allumé | `docker compose stop simulator-stream` ; la rétention Kafka est bornée à 6 h et 512 Mo par partition |

@@ -17,10 +17,19 @@ Aucune personne réelle n'est concernée : noms, IBAN, téléphones et adresses 
 | `demo` | 100 000 | ~5 M | ~5 M | développement |
 | `full` | 1 000 000 | **~50 M** | **~50 M** | projet |
 
-Mesures (préréglage `full`, un cœur de processeur) : une part d'environ 875 000 transactions et
-875 000 événements est produite en ~45 s et occupe ~113 Mo compressés. L'année complète
-(72 parts) prend donc ~15 min avec 4 processus et occupe ~7 Go compressés dans la zone
-d'arrivée. Mémoire : ~2,5 Go par processus.
+Mesure réelle (préréglage `full`, 4 processus, PC de développement, 15/09/2026) :
+
+| Indicateur | Valeur |
+|---|---|
+| Transactions | 50 506 402 (dont 105 461 frauduleuses, 0,21 %) |
+| Événements applicatifs | 50 504 302 |
+| Déclarations de fraude | 99 226 |
+| E-mails du support | 184 334 |
+| Volume compressé | 6,4 Go |
+| Durée | 296 s, soit **170 500 transactions/s** |
+| Parts en échec | 0 |
+
+Mémoire : ~2,5 Go par processus.
 
 ## Utilisation
 
