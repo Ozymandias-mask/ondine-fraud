@@ -248,6 +248,22 @@ services:
       timeout: 5s
       retries: 10
 
+  # Migrations du schéma (idempotent) : appliquées à chaque démarrage, y compris sur une base existante.
+  db-migrate:
+    image: postgres:17.11-alpine
+    networks: [ondine]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_ADMIN_USER}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+    volumes:
+      - ./infra/postgres/migrate.sh:/migrate.sh:ro
+      - ./infra/postgres/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "/migrate.sh"]
+
   postgres-backup:
     image: postgres:17.11-alpine
     restart: unless-stopped
@@ -285,6 +301,20 @@ services:
         limits:
           memory: 512M
 
+  # Reçoit les métriques des traitements batch (trop courts pour être interrogés par Prometheus).
+  pushgateway:
+    image: prom/pushgateway:v1.11.3
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:9091:9091"]
+    command: ["--persistence.file=/data/metrics", "--persistence.interval=1m"]
+    volumes: [pushgateway-data:/data]
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
   grafana:
     image: grafana/grafana:13.2.1
     restart: unless-stopped
@@ -306,6 +336,35 @@ services:
       resources:
         limits:
           memory: 512M
+
+  # ---------------------------------------------------------------- Pipelines (ligne de commande, profil à la demande)
+  pipelines-cli:
+    build: ./pipelines
+    image: ondine/pipelines:local
+    profiles: [pipelines]
+    restart: "no"
+    networks: [ondine]
+    entrypoint: ["ondine-pipelines"]
+    command: ["ingest", "--dataset", "all"]
+    volumes: ["./data:/data"]
+    environment: &pipeline-env
+      LANDING_ROOT: /data/landing
+      LAKE_ROOT: s3
+      S3_ENDPOINT: seaweed-filer:8333
+      S3_PIPELINE_ACCESS_KEY: ${S3_PIPELINE_ACCESS_KEY}
+      S3_PIPELINE_SECRET_KEY: ${S3_PIPELINE_SECRET_KEY}
+      PIPELINE_PG_DSN: postgresql://ingestion_app:${PG_INGESTION_PASSWORD}@postgres:5432/ondine
+      PSEUDONYMISATION_KEY: ${PSEUDONYMISATION_KEY}
+      PUSHGATEWAY_URL: pushgateway:9091
+      DUCKDB_THREADS: "4"
+      DUCKDB_MEMORY_LIMIT: 6GB
+    depends_on:
+      db-migrate: {condition: service_completed_successfully}
+      seaweed-init: {condition: service_completed_successfully}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
 
   # ---------------------------------------------------------------- Simulateur (profils à la demande)
   simulator-stream:
@@ -355,4 +414,5 @@ volumes:
   postgres-data:
   postgres-backups:
   prometheus-data:
+  pushgateway-data:
   grafana-data:

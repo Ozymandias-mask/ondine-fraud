@@ -3,9 +3,9 @@
 Usage (Windows, macOS ou Linux) :  python scripts/generate_env.py [--force]
 
 Les secrets sont produits par le module `secrets` (générateur cryptographique du
-système). Le fichier existant n'est jamais écrasé sans --force : régénérer les
-mots de passe après le premier démarrage rendrait les volumes PostgreSQL et S3
-inaccessibles.
+système). Un fichier existant n'est jamais écrasé sans --force (régénérer les mots de
+passe rendrait les volumes PostgreSQL et S3 inaccessibles) : seules les variables
+ajoutées depuis au modèle sont complétées.
 """
 
 from __future__ import annotations
@@ -35,6 +35,26 @@ def secret_for(name: str) -> str:
     return secrets.token_urlsafe(24)
 
 
+def add_missing() -> int:
+    """Complète un .env existant avec les variables apparues dans le modèle."""
+    existing = TARGET.read_text(encoding="utf-8")
+    present = set(re.findall(r"^([A-Z0-9_]+)=", existing, flags=re.MULTILINE))
+    added = []
+    for line in TEMPLATE.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^([A-Z0-9_]+)=(.*)$", line)
+        if match and match.group(1) not in present:
+            name = match.group(1)
+            value = match.group(2) if name in KEEP_TEMPLATE_VALUE else secret_for(name)
+            added.append(f"{name}={value}")
+    if not added:
+        print(f"{TARGET} est complet : rien à faire.")
+        return 0
+    with TARGET.open("a", encoding="utf-8") as handle:
+        handle.write("\n" + "\n".join(added) + "\n")
+    print(f"Variables ajoutées à {TARGET} : " + ", ".join(a.split("=")[0] for a in added))
+    return 0
+
+
 def main() -> int:
     """Crée .env à partir de .env.example."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -42,8 +62,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if TARGET.exists() and not args.force:
-        print(f"{TARGET} existe déjà : rien à faire (utiliser --force pour le régénérer).")
-        return 0
+        return add_missing()
 
     lines = []
     for line in TEMPLATE.read_text(encoding="utf-8").splitlines():

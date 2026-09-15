@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ondine-pipelines"
+version = "1.0.0"
+description = "Pipelines de données d'Ondine Bank : ingestion, qualité, pseudonymisation, features"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=1.2",
+    "pyarrow>=18",
+    "psycopg[binary]>=3.2",
+    "prometheus-client>=0.21",
+    "pytz",
+]
+
+[project.scripts]
+ondine-pipelines = "ondine_pipelines.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

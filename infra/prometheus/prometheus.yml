@@ -24,3 +24,9 @@ scrape_configs:
         labels: {component: volume}
       - targets: ["seaweed-filer:9326"]
         labels: {component: filer}
+
+  # Métriques poussées par les traitements batch ; honor_labels conserve leurs étiquettes.
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]

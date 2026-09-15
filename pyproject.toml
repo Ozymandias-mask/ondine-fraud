@@ -14,8 +14,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "S310", "D", "E501"]
+"**/tests/**" = ["S101", "S310", "S608", "D", "E501"]
+# Requêtes DuckDB construites à partir de constantes internes et de littéraux échappés
+# (lake.sql_literal) : aucune donnée utilisateur n'est concaténée dans le SQL.
+"pipelines/src/**" = ["S608"]
 
 [tool.pytest.ini_options]
-testpaths = ["simulator/tests"]
+testpaths = ["simulator/tests", "pipelines/tests"]
 addopts = "-q"

@@ -1,0 +1,5 @@
+# Dépendances ajoutées à l'image Airflow (versions figées). pyarrow et prometheus-client
+# sont déjà fournis par l'image Airflow, dans des versions compatibles.
+duckdb==1.5.5
+psycopg[binary]==3.3.5
+pytz==2026.1
