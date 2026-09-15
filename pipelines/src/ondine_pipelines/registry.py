@@ -103,6 +103,16 @@ class Registry:
             rows = con.execute("SELECT source_path, sha256 FROM ops.file_ingestions").fetchall()
         return {(r[0], r[1]) for r in rows}
 
+    def last_success(self, pipeline: str, task: str) -> bool:
+        """Vrai si la dernière exécution d'une tâche a réussi (reprise sans tout refaire)."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT status FROM ops.pipeline_runs WHERE pipeline = %s AND task = %s"
+                " AND status <> 'running' ORDER BY started_at DESC LIMIT 1",
+                (pipeline, task),
+            ).fetchone()
+        return bool(row and row[0] == "success")
+
     def ingested_periods(self, dataset: str) -> list[str]:
         """Mois (AAAA-MM) pour lesquels des fichiers d'un jeu de données ont été ingérés."""
         with self._connect() as con:

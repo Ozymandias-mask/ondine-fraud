@@ -9,8 +9,13 @@ import sys
 from .settings import Settings
 
 
-def run_silver(settings: Settings, dataset: str, month: str) -> None:
-    """Construit la couche silver (tout ou partie) en respectant les dépendances."""
+def run_silver(settings: Settings, dataset: str, month: str, resume: bool) -> list[str]:
+    """Construit la couche silver en respectant les dépendances. Retourne les tâches en échec.
+
+    Une tâche en échec n'arrête pas les autres (les mois sont indépendants) ; avec `resume`,
+    les tâches dont la dernière exécution a réussi ne sont pas recalculées.
+    """
+    from .lake import with_retries
     from .registry import Registry
     from .silver.activity import build_month
     from .silver.labels import build_labels
@@ -18,22 +23,43 @@ def run_silver(settings: Settings, dataset: str, month: str) -> None:
     from .silver.support import build_support_month
 
     registry = Registry(settings)
+    failures: list[str] = []
+    log = logging.getLogger("ondine_pipelines.cli")
 
     def months(source: str) -> list[tuple[int, int]]:
         periods = registry.ingested_periods(source) if month == "all" else [month]
         return [(int(p[:4]), int(p[5:7])) for p in periods]
 
+    tasks: list[tuple[str, object]] = []
     if dataset in ("all", "referentials"):
-        print("referentials", build_referentials(settings))
+        tasks.append(("referentials", lambda: build_referentials(settings)))
     if dataset in ("all", "fraud_labels"):
-        print("fraud_labels", build_labels(settings))
+        tasks.append(("fraud_labels", lambda: build_labels(settings)))
     for name in ("transactions", "app_events"):
         if dataset in ("all", name):
-            for year, mon in months(name):
-                print(name, f"{year}-{mon:02d}", build_month(settings, name, year, mon))
+            for y, m in months(name):
+                tasks.append(
+                    (f"{name}_{y}-{m:02d}", lambda n=name, y=y, m=m: build_month(settings, n, y, m))
+                )
     if dataset in ("all", "support_messages"):
-        for year, mon in months("support_emails"):
-            print("support_messages", f"{year}-{mon:02d}", build_support_month(settings, year, mon))
+        for y, m in months("support_emails"):
+            tasks.append(
+                (
+                    f"support_messages_{y}-{m:02d}",
+                    lambda y=y, m=m: build_support_month(settings, y, m),
+                )
+            )
+
+    for task, action in tasks:
+        if resume and registry.last_success("silver", task):
+            log.info("%s : déjà construit, ignoré (--no-resume pour recalculer)", task)
+            continue
+        try:
+            print(task, with_retries(action))
+        except Exception:
+            log.exception("%s : échec", task)
+            failures.append(task)
+    return failures
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
     silver.add_argument("--month", default="all", help="AAAA-MM ou all")
+    silver.add_argument("--no-resume", action="store_true", help="Recalculer même ce qui a réussi")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -70,7 +97,10 @@ def main(argv: list[str] | None = None) -> int:
             for dataset in datasets:
                 print(dataset, ingest_dataset(settings, dataset, args.limit))
         elif args.command == "silver":
-            run_silver(settings, args.dataset, args.month)
+            failures = run_silver(settings, args.dataset, args.month, not args.no_resume)
+            if failures:
+                logging.getLogger(__name__).error("Tâches en échec : %s", ", ".join(failures))
+                return 1
     except Exception:
         logging.getLogger(__name__).exception("Échec du pipeline")
         return 1

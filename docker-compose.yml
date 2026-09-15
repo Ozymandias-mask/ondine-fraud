@@ -200,7 +200,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 768M
+          # Passerelle S3 + chiffrement : les lectures parallèles de gros fichiers Parquet
+          # saturaient 768 Mo (redémarrage du filer pendant la couche silver, 15/09/2026).
+          memory: 2G
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8888/ > /dev/null"]
       interval: 15s

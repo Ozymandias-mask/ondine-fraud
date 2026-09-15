@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import duckdb
 
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 def _sql_literal(value: str) -> str:
@@ -33,6 +37,12 @@ def connect(settings: Settings) -> duckdb.DuckDBPyConnection:
     if settings.uses_s3:
         # Extension installée dans l'image Docker (aucun téléchargement à l'exécution).
         con.execute("LOAD httpfs")
+        # Résilience réseau : une coupure brève du stockage (redémarrage, saturation) est
+        # absorbée par des nouvelles tentatives espacées de façon exponentielle.
+        con.execute("SET http_retries = 8")
+        con.execute("SET http_retry_wait_ms = 1000")
+        con.execute("SET http_retry_backoff = 2")
+        con.execute("SET http_timeout = 120")
         con.execute(
             "CREATE OR REPLACE SECRET lake (TYPE s3, "
             f"KEY_ID {_sql_literal(settings.s3_access_key)}, "
@@ -68,6 +78,33 @@ def copy_to_parquet(
 def sql_literal(value: str) -> str:
     """Version publique de l'échappement des littéraux SQL."""
     return _sql_literal(value)
+
+
+TRANSIENT_ERRORS = (duckdb.IOException, duckdb.HTTPException)
+
+
+def with_retries(action: Callable[[], T], attempts: int = 3, wait_s: float = 20.0) -> T:
+    """Relance une action après une erreur d'entrée-sortie transitoire (stockage indisponible).
+
+    Les erreurs de logique ou de qualité ne sont jamais relancées : seules les erreurs réseau
+    ou disque, susceptibles de disparaître d'elles-mêmes, le sont.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return action()
+        except TRANSIENT_ERRORS as exc:
+            if attempt == attempts:
+                raise
+            delay = wait_s * 2 ** (attempt - 1)
+            logger.warning(
+                "Erreur transitoire (%s), nouvel essai %d/%d dans %.0f s",
+                exc,
+                attempt + 1,
+                attempts,
+                delay,
+            )
+            time.sleep(delay)
+    raise AssertionError("inaccessible")  # pragma: no cover
 
 
 def enable_pseudonymisation(con: duckdb.DuckDBPyConnection, key: str) -> None:
