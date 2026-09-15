@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import psycopg
 
@@ -20,6 +21,13 @@ from . import metrics
 from .settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Jeux de données alimentés aussi par le flux Kafka (ingestion stream-ingest).
+STREAM_TOPICS = {
+    "transactions": "transactions.raw",
+    "app_events": "app-events.raw",
+    "fraud_reports": "fraud-reports.raw",
+}
 
 
 @dataclass
@@ -114,14 +122,52 @@ class Registry:
         return bool(row and row[0] == "success")
 
     def ingested_periods(self, dataset: str) -> list[str]:
-        """Mois (AAAA-MM) pour lesquels des fichiers d'un jeu de données ont été ingérés."""
+        """Mois (AAAA-MM) présents en bronze pour un jeu, par fichier ou par flux Kafka."""
+        return sorted(self.bronze_updates(dataset))
+
+    def last_success_window(self, pipeline: str, task: str) -> tuple[datetime, datetime] | None:
+        """(début, fin) du dernier run si le dernier run terminé de la tâche a réussi."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT status, started_at, finished_at FROM ops.pipeline_runs"
+                " WHERE pipeline = %s AND task = %s AND status <> 'running'"
+                " ORDER BY started_at DESC LIMIT 1",
+                (pipeline, task),
+            ).fetchone()
+        return (row[1], row[2]) if row and row[0] == "success" else None
+
+    def bronze_updates(self, dataset: str) -> dict[str, datetime]:
+        """Dernière écriture en bronze par mois (AAAA-MM), fichiers et flux confondus.
+
+        Pour les référentiels (instantanés sans mois), la clé est « * ».
+        """
+        topic = STREAM_TOPICS.get(dataset)
         with self._connect() as con:
             rows = con.execute(
-                "SELECT DISTINCT period FROM ops.file_ingestions"
-                " WHERE dataset = %s AND period IS NOT NULL ORDER BY 1",
+                "SELECT coalesce(period, '*'), max(ingested_at) FROM ops.file_ingestions"
+                " WHERE dataset = %s GROUP BY 1",
                 (dataset,),
             ).fetchall()
-        return [r[0] for r in rows]
+            if topic:
+                # Un lot peut chevaucher deux mois (messages de part et d'autre de minuit).
+                rows += con.execute(
+                    """
+                    SELECT to_char(m, 'YYYY-MM'), max(b.written_at)
+                    FROM ops.stream_batches b,
+                         generate_series(
+                             date_trunc('month', b.min_event_time AT TIME ZONE 'UTC'),
+                             date_trunc('month', b.max_event_time AT TIME ZONE 'UTC'),
+                             INTERVAL '1 month') AS m
+                    WHERE b.topic = %s AND b.rows_valid > 0
+                    GROUP BY 1
+                    """,
+                    (topic,),
+                ).fetchall()
+        updates: dict[str, datetime] = {}
+        for period, written_at in rows:
+            key = period if period == "*" else period[:7]
+            updates[key] = max(written_at, updates.get(key, written_at))
+        return updates
 
     def record_file(
         self,

@@ -36,7 +36,8 @@ cat > /etc/seaweedfs/s3.json <<JSON
                   "Read:bronze", "Write:bronze", "List:bronze",
                   "Read:silver", "Write:silver", "List:silver",
                   "Read:gold", "Write:gold", "List:gold",
-                  "Read:quarantine", "Write:quarantine", "List:quarantine"]
+                  "Read:quarantine", "Write:quarantine", "List:quarantine",
+                  "Read:exports", "Write:exports", "List:exports"]
     },
     {
       "name": "ml",

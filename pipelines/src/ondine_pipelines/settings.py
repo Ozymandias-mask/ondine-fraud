@@ -10,7 +10,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-LAYERS = ("bronze", "silver", "gold", "quarantine")
+# « exports » : exports des demandes d'accès RGPD (bucket à accès restreint).
+LAYERS = ("bronze", "silver", "gold", "quarantine", "exports")
 
 
 class ConfigurationError(RuntimeError):

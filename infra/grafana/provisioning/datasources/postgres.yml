@@ -1,0 +1,19 @@
+# Base « ondine » en lecture seule (compte analyst_ro) : registre des traitements,
+# indicateurs métier, gouvernance. Le mot de passe vient de l'environnement du conteneur.
+apiVersion: 1
+datasources:
+  - name: PostgreSQL Ondine (lecture seule)
+    uid: ondine-postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: analyst_ro
+    jsonData:
+      database: ondine
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+      maxOpenConns: 5
+    secureJsonData:
+      password: $PG_ANALYST_PASSWORD
+    editable: false

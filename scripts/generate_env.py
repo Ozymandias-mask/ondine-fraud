@@ -23,13 +23,20 @@ TEMPLATE = ROOT / ".env.example"
 TARGET = ROOT / ".env"
 
 # Variables dont la valeur n'est pas un secret : reprises telles quelles du modèle.
-KEEP_TEMPLATE_VALUE = {"KAFKA_UI_USER", "POSTGRES_ADMIN_USER", "GRAFANA_ADMIN_USER"}
+KEEP_TEMPLATE_VALUE = {
+    "KAFKA_UI_USER",
+    "POSTGRES_ADMIN_USER",
+    "GRAFANA_ADMIN_USER",
+    "AIRFLOW_ADMIN_USER",
+}
 
 
 def secret_for(name: str) -> str:
     """Valeur adaptée à la variable : identifiant Kafka, clé d'accès ou mot de passe."""
     if name == "KAFKA_CLUSTER_ID":
         return base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=")
+    if name == "AIRFLOW_FERNET_KEY":  # format imposé : 32 octets en base64 URL
+        return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
     if name.endswith("_ACCESS_KEY"):
         return secrets.token_hex(10).upper()
     return secrets.token_urlsafe(24)

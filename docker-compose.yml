@@ -3,8 +3,8 @@
 #
 # Démarrage :  python scripts/generate_env.py   (une seule fois : crée .env avec des secrets forts)
 #              docker compose up -d
-# Simulateur : docker compose --profile stream up -d simulator-stream
-#              docker compose --profile generate run --rm simulator-batch
+# Profils :    generate (historique), stream (flux + ingestion), orchestration (Airflow),
+#              pipelines (ligne de commande)
 #
 # Principes appliqués :
 #  - redondance : Kafka 3 nœuds (réplication 3, min.insync 2), stockage objet répliqué sur 2 volumes ;
@@ -20,6 +20,48 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
+
+# Configuration commune des services Airflow (même image que les pipelines).
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${PG_AIRFLOW_PASSWORD}@postgres:5432/airflow
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+  AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/ondine/dags
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  # Les DAG sont actifs dès leur chargement : la plateforme s'automatise sans intervention.
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  AIRFLOW__CORE__PARALLELISM: "6"
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  AIRFLOW__API__EXPOSE_CONFIG: "false"
+  # Paramètres des traitements (mêmes secrets et accès que pipelines-cli)
+  LANDING_ROOT: /data/landing
+  LAKE_ROOT: s3
+  S3_ENDPOINT: seaweed-filer:8333
+  S3_PIPELINE_ACCESS_KEY: ${S3_PIPELINE_ACCESS_KEY}
+  S3_PIPELINE_SECRET_KEY: ${S3_PIPELINE_SECRET_KEY}
+  PIPELINE_PG_DSN: postgresql://ingestion_app:${PG_INGESTION_PASSWORD}@postgres:5432/ondine
+  PSEUDONYMISATION_KEY: ${PSEUDONYMISATION_KEY}
+  PUSHGATEWAY_URL: pushgateway:9091
+  DUCKDB_THREADS: "4"
+  DUCKDB_MEMORY_LIMIT: 4GB
+  LANDING_RETENTION_DAYS: "7"
+
+x-airflow-common: &airflow-common
+  image: ondine/pipelines:local
+  build: ./pipelines
+  profiles: [orchestration]
+  restart: unless-stopped
+  logging: *default-logging
+  networks: [ondine]
+  environment: *airflow-env
+  volumes:
+    - ./pipelines/dags:/opt/ondine/dags:ro
+    - ./data:/data
+    - airflow-logs:/opt/airflow/logs
 
 x-kafka-common: &kafka-common
   image: apache/kafka:4.3.1
@@ -323,13 +365,15 @@ services:
     logging: *default-logging
     networks: [ondine]
     ports: ["127.0.0.1:3000:3000"]
-    depends_on: [prometheus]
+    depends_on: [prometheus, postgres]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # Source PostgreSQL en lecture seule (indicateurs métier, registre, gouvernance).
+      PG_ANALYST_PASSWORD: ${PG_ANALYST_PASSWORD}
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -406,6 +450,86 @@ services:
         limits:
           memory: 1G
 
+  # ---------------------------------------------------------------- Orchestration Airflow (profil orchestration)
+  # Planification et reprise automatiques de tous les traitements batch (DAG dans pipelines/dags).
+  # Exécuteur local : les tâches tournent dans le conteneur du scheduler, le pool « duckdb »
+  # limite les calculs simultanés à 2 pour tenir dans sa mémoire.
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+      db-migrate: {condition: service_completed_successfully}
+      seaweed-init: {condition: service_completed_successfully}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        airflow db migrate
+        airflow pools set duckdb 2 "Calculs DuckDB simultanés (mémoire du scheduler)"
+        # Comptes nominatifs : administrateur de la plateforme et consultation seule.
+        airflow users list | grep -qw "$${AIRFLOW_ADMIN_USER}" || airflow users create \
+          --username "$${AIRFLOW_ADMIN_USER}" --password "$${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname Admin --lastname Plateforme --role Admin --email admin@ondine.local
+        airflow users list | grep -qw analyste || airflow users create \
+          --username analyste --password "$${AIRFLOW_VIEWER_PASSWORD}" \
+          --firstname Analyste --lastname Fraude --role Viewer --email analyste@ondine.local
+        echo "Airflow initialisé."
+    environment:
+      <<: *airflow-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      AIRFLOW_VIEWER_PASSWORD: ${AIRFLOW_VIEWER_PASSWORD}
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: ["api-server"]
+    ports: ["127.0.0.1:8081:8080"]
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["scheduler"]
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["dag-processor"]
+    depends_on:
+      airflow-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --hostname \"$${HOSTNAME}\""]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
   # ---------------------------------------------------------------- Simulateur (profils à la demande)
   simulator-stream:
     build: ./simulator
@@ -456,3 +580,4 @@ volumes:
   prometheus-data:
   pushgateway-data:
   grafana-data:
+  airflow-logs:

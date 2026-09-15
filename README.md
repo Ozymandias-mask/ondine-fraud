@@ -12,7 +12,7 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | Étape | Contenu | État |
 |---|---|---|
 | 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait, validé sur le PC** |
-| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : bronze, silver et gold validées, ingestion en flux livrée |
+| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : bronze, silver, gold et flux validés ; orchestration et gouvernance livrées |
 | 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | à venir |
 | 4. Plans écrits | Gouvernance, infrastructure, pipeline | à venir |
 
@@ -20,11 +20,14 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 
 ```
  Simulateur ──batch──▶ data/landing (CSV, JSON, e-mails) ──▶ ingestion batch ──┐
-     │                                                                           ├──▶ S3 : bronze ──▶ silver ──▶ gold
+     │                                                                           ├──▶ S3 : bronze ──▶ silver ──▶ gold ──▶ indicateurs
      └──stream──▶ Kafka (3 brokers, réplication 3) ──▶ stream-ingest ×2 ─────────┘
                         └──▶ topics d'erreurs *.dlq            [scoring temps réel, étape 3]
 
- PostgreSQL : audit (journal en ajout seul), gouvernance (registre RGPD, consentements, droits)
+ PostgreSQL : audit (journal en ajout seul), gouvernance (registre RGPD, consentements, droits,
+             incidents), ops (registre des traitements, lignage), analytics (indicateurs métier)
+ Airflow : planifie et relance ingestion batch, silver, gold, indicateurs, droits RGPD, détection
+          d'accès anormaux et rétention
  Prometheus + Grafana : métriques et alertes de tous les composants
 ```
 
@@ -40,15 +43,16 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | `simulator-stream` | flux de transactions | http://localhost:8000/health | API de pilotage protégée par jeton |
 | `stream-ingest` | Kafka → bronze (profil stream) | réseau interne, métriques :8001 | 2 répliques en groupe, commit après écriture |
 | `pipelines-cli` | traitements batch (profil pipelines) | – | voir `pipelines/README.md` |
+| `airflow-*` | orchestration (profil orchestration) | http://localhost:8081 | comptes nominatifs (admin, consultation), relances automatiques |
 
 Tous les ports sont liés à `127.0.0.1` : rien n'est exposé sur le réseau local.
 
 ## Prérequis
 
 - Windows 10/11 avec **Docker Desktop** (moteur WSL2) et **Git** ; Python 3.11+ pour les scripts.
-- 32 Go de RAM recommandés (la stack utilise jusqu'à ~8 Go, la génération complète ~10 Go de plus pendant ~5 min).
+- 32 Go de RAM recommandés : la plateforme utilise ~8 Go, Airflow jusqu'à ~10 Go pendant les recalculs, la génération complète ~10 Go pendant ~5 min (ne pas la lancer en même temps qu'un recalcul complet).
 - Disque : ~8 Go d'images, 6,4 Go pour la zone d'arrivée brute, jusqu'à ~20 Go pour Kafka (rétention bornée), puis le data lake.
-- Dans Docker Desktop > Settings > Resources : allouer au moins 16 Go de mémoire à WSL.
+- Dans Docker Desktop > Settings > Resources : allouer au moins 20 Go de mémoire à WSL.
 
 ## Démarrage
 
@@ -69,6 +73,9 @@ docker compose --profile generate run --rm simulator-batch
 # 4. Flux temps réel + ingestion en bronze (--build : reconstruit les images si le code a changé)
 #    Arrêt quand il ne sert pas : docker compose --profile stream stop
 docker compose --profile stream up -d --build
+
+# 5. Orchestration : ingestion, silver, gold, indicateurs, RGPD et sécurité automatiques
+docker compose --profile orchestration up -d --build
 ```
 
 ### Mettre à jour le dépôt à partir d'un bundle livré
@@ -84,7 +91,7 @@ Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafan
 
 ```
 .
-├── docker-compose.yml          plateforme complète (profils : stream, generate, pipelines)
+├── docker-compose.yml          plateforme complète (profils : stream, generate, pipelines, orchestration)
 ├── .env.example                modèle des secrets (le vrai .env n'est jamais versionné)
 ├── scripts/generate_env.py     génération de secrets forts
 ├── infra/

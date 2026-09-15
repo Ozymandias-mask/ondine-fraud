@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,11 +31,17 @@ def landing(tmp_path_factory) -> Path:
     return root
 
 
-@pytest.fixture(scope="session")
-def pg_dsn():
+def _admin_dsn() -> str:
     admin_dsn = os.environ.get("TEST_PG_ADMIN_DSN")
     if not admin_dsn:
         pytest.skip("TEST_PG_ADMIN_DSN non défini")
+    return admin_dsn
+
+
+@contextmanager
+def temporary_database():
+    """Base vide créée avec les vrais scripts SQL du dépôt, supprimée à la fin."""
+    admin_dsn = _admin_dsn()
     name = f"ondine_test_{uuid.uuid4().hex[:8]}"
     with psycopg.connect(admin_dsn, autocommit=True) as con:
         for role in ROLES:
@@ -55,9 +62,17 @@ def pg_dsn():
                 if not line.startswith("\\connect")
             )
             con.execute(sql)
-    yield dsn
-    with psycopg.connect(admin_dsn, autocommit=True) as con:
-        con.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+    try:
+        yield dsn
+    finally:
+        with psycopg.connect(admin_dsn, autocommit=True) as con:
+            con.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+
+
+@pytest.fixture(scope="session")
+def pg_dsn():
+    with temporary_database() as dsn:
+        yield dsn
 
 
 @pytest.fixture(scope="session")
@@ -76,3 +91,10 @@ def base_settings(landing, pg_dsn, tmp_path_factory) -> Settings:
 def fresh_settings(base_settings, tmp_path) -> Settings:
     """Data lake vide propre au test (la base de registre reste partagée)."""
     return replace(base_settings, lake_root=str(tmp_path / "lake"))
+
+
+@pytest.fixture(scope="module")
+def module_pg_dsn():
+    """Base de registre propre au module (tests dont le résultat dépend de tout l'historique)."""
+    with temporary_database() as dsn:
+        yield dsn

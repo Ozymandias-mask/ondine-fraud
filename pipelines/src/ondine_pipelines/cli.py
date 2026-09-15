@@ -9,87 +9,76 @@ import sys
 from .settings import Settings
 
 
-def run_silver(settings: Settings, dataset: str, month: str, resume: bool) -> list[str]:
-    """Construit la couche silver en respectant les dépendances. Retourne les tâches en échec.
+def _run_planned(settings: Settings, tasks: list, label: str) -> list[str]:
+    """Exécute des tâches dans l'ordre ; une tâche en échec n'arrête pas les suivantes."""
+    from .tasks import execute
 
-    Une tâche en échec n'arrête pas les autres (les mois sont indépendants) ; avec `resume`,
-    les tâches dont la dernière exécution a réussi ne sont pas recalculées.
-    """
-    from .lake import with_retries
-    from .registry import Registry
-    from .silver.activity import build_month
-    from .silver.labels import build_labels
-    from .silver.referentials import build_referentials
-    from .silver.support import build_support_month
-
-    registry = Registry(settings)
-    failures: list[str] = []
     log = logging.getLogger("ondine_pipelines.cli")
-
-    def months(source: str) -> list[tuple[int, int]]:
-        periods = registry.ingested_periods(source) if month == "all" else [month]
-        return [(int(p[:4]), int(p[5:7])) for p in periods]
-
-    tasks: list[tuple[str, object]] = []
-    if dataset in ("all", "referentials"):
-        tasks.append(("referentials", lambda: build_referentials(settings)))
-    if dataset in ("all", "fraud_labels"):
-        tasks.append(("fraud_labels", lambda: build_labels(settings)))
-    for name in ("transactions", "app_events"):
-        if dataset in ("all", name):
-            for y, m in months(name):
-                tasks.append(
-                    (f"{name}_{y}-{m:02d}", lambda n=name, y=y, m=m: build_month(settings, n, y, m))
-                )
-    if dataset in ("all", "support_messages"):
-        for y, m in months("support_emails"):
-            tasks.append(
-                (
-                    f"support_messages_{y}-{m:02d}",
-                    lambda y=y, m=m: build_support_month(settings, y, m),
-                )
-            )
-
-    for task, action in tasks:
-        if resume and registry.last_success("silver", task):
-            log.info("%s : déjà construit, ignoré (--no-resume pour recalculer)", task)
-            continue
+    failures: list[str] = []
+    if not tasks:
+        log.info("%s : tout est à jour", label)
+    for task in tasks:
+        log.info("%s : %s", task.name, task.reason)
         try:
-            print(task, with_retries(action))
+            print(task.name, execute(settings, task))
         except Exception:
-            log.exception("%s : échec", task)
-            failures.append(task)
+            log.exception("%s : échec", task.name)
+            failures.append(task.name)
     return failures
+
+
+def run_silver(settings: Settings, dataset: str, month: str, resume: bool) -> list[str]:
+    """Construit ce qui est à reconstruire en silver (voir planning). Retourne les échecs.
+
+    Sans `resume`, tout est recalculé ; avec, seules les tâches jamais réussies, en échec ou
+    dont les données bronze ont changé depuis leur dernier succès.
+    """
+    from .planning import plan_silver
+    from .registry import Registry
+
+    tasks = [
+        t
+        for t in plan_silver(Registry(settings), force=not resume)
+        if dataset in ("all", t.dataset)
+        and (month == "all" or t.year is None or t.name.endswith(month))
+    ]
+    return _run_planned(settings, tasks, "silver")
 
 
 def run_gold(settings: Settings, month: str, resume: bool) -> list[str]:
-    """Construit les tables « première apparition » puis les features mois par mois."""
-    from .gold.features import build_features_month, build_first_seen
+    """Reconstruit les tables « première apparition » puis les mois gold à recalculer."""
+    from .gold.features import build_first_seen
     from .lake import with_retries
+    from .planning import plan_gold
     from .registry import Registry
 
-    registry = Registry(settings)
-    log = logging.getLogger("ondine_pipelines.cli")
-    failures: list[str] = []
-    # Toujours recalculées : elles dépendent de tout l'historique disponible.
+    tasks = [
+        t
+        for t in plan_gold(Registry(settings), force=not resume)
+        if month == "all" or t.name.endswith(month)
+    ]
+    if not tasks:
+        return _run_planned(settings, tasks, "gold")
     try:
+        # Recalculées dès qu'un mois change : elles dépendent de tout l'historique.
         print("first_seen", with_retries(lambda: build_first_seen(settings)))
     except Exception:
-        log.exception("first_seen : échec, features non calculables")
+        logging.getLogger("ondine_pipelines.cli").exception("first_seen : échec")
         return ["first_seen"]
-    periods = registry.ingested_periods("transactions") if month == "all" else [month]
-    for period in periods:
-        y, m = int(period[:4]), int(period[5:7])
-        task = f"transaction_features_{y}-{m:02d}"
-        if resume and registry.last_success("gold", task):
-            log.info("%s : déjà construit, ignoré", task)
-            continue
-        try:
-            print(task, with_retries(lambda y=y, m=m: build_features_month(settings, y, m)))
-        except Exception:
-            log.exception("%s : échec", task)
-            failures.append(task)
-    return failures
+    return _run_planned(settings, tasks, "gold")
+
+
+def run_kpis(settings: Settings, month: str, resume: bool) -> list[str]:
+    """Rafraîchit les indicateurs métier des mois dont la couche gold a changé."""
+    from .planning import plan_kpis
+    from .registry import Registry
+
+    tasks = [
+        t
+        for t in plan_kpis(Registry(settings), force=not resume)
+        if month == "all" or t.name.endswith(month)
+    ]
+    return _run_planned(settings, tasks, "indicateurs")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,7 +106,14 @@ def main(argv: list[str] | None = None) -> int:
     gold = sub.add_parser("gold", help="Silver -> gold (features et labels)")
     gold.add_argument("--month", default="all", help="AAAA-MM ou all")
     gold.add_argument("--no-resume", action="store_true", help="Recalculer même ce qui a réussi")
+    kpis = sub.add_parser("kpis", help="Gold -> indicateurs métier (PostgreSQL)")
+    kpis.add_argument("--month", default="all", help="AAAA-MM ou all")
+    kpis.add_argument("--no-resume", action="store_true", help="Recalculer même ce qui est à jour")
     sub.add_parser("stream", help="Kafka -> bronze en continu (service stream-ingest)")
+    sub.add_parser("rights", help="Traiter les demandes RGPD en attente")
+    sub.add_parser("security-scan", help="Détecter les accès anormaux dans le journal d'audit")
+    retention = sub.add_parser("retention", help="Purger la zone d'arrivée déjà ingérée")
+    retention.add_argument("--days", type=int, default=7)
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -135,6 +131,28 @@ def main(argv: list[str] | None = None) -> int:
             if failures:
                 logging.getLogger(__name__).error("Tâches en échec : %s", ", ".join(failures))
                 return 1
+        elif args.command == "kpis":
+            failures = run_kpis(settings, args.month, not args.no_resume)
+            if failures:
+                logging.getLogger(__name__).error("Tâches en échec : %s", ", ".join(failures))
+                return 1
+        elif args.command == "rights":
+            from .governance.monitoring import push_governance_metrics
+            from .governance.rights import process_requests
+
+            print(process_requests(settings))
+            push_governance_metrics(settings)
+        elif args.command == "security-scan":
+            from .governance.monitoring import push_governance_metrics
+            from .governance.security import detect_abnormal_access
+
+            for incident in detect_abnormal_access(settings):
+                print("Incident", incident)
+            print(push_governance_metrics(settings))
+        elif args.command == "retention":
+            from .ingest.retention import purge_landing
+
+            print(purge_landing(settings, args.days))
         elif args.command == "stream":
             from .stream.consumer import main as stream_main
 

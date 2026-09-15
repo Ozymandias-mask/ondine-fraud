@@ -3,8 +3,8 @@
 Code des traitements du data lake (bloc 3). Moteur de calcul : **DuckDB** (SQL analytique
 en colonnes, parallèle, capable de déborder sur disque) ; stockage : **Parquet sur S3**.
 
-> État : bronze, silver et gold validées sur le PC (50 M de transactions). Ingestion en flux
-> livrée ; orchestration Airflow et droits RGPD arrivent dans les prochaines livraisons.
+> État : bronze, silver, gold et ingestion en flux validées sur le PC (50 M de transactions).
+> Orchestration Airflow, indicateurs métier, droits RGPD et détection d'accès anormaux livrés.
 
 ## Ingestion : zone d'arrivée → bronze
 
@@ -112,19 +112,71 @@ Contrôles bloquants : une ligne par transaction silver, identifiants uniques, c
 temporelle des fenêtres, label postérieur à la transaction, bornes du mois, absence de
 pseudonyme. Avertissements : taux de fraude plausible (0,02 % à 2 %).
 
-## Lancer les traitements (sans Airflow)
+## Orchestration automatique (Airflow 3.3)
+
+Interface : http://localhost:8081 (comptes `admin` et `analyste` en consultation seule,
+mots de passe dans `.env`). Les DAG sont actifs dès le démarrage.
+
+| DAG | Déclenchement | Rôle |
+|---|---|---|
+| `ondine_ingestion` | toutes les 15 min | détecte les nouvelles livraisons (manifestes) et ingère chaque jeu en parallèle ; publie l'événement « bronze mis à jour » |
+| `ondine_lake_refresh` | événement bronze **ou** toutes les heures (flux Kafka) | silver → gold → indicateurs métier, seulement là où les entrées ont changé |
+| `ondine_governance` | toutes les 15 min | demandes RGPD, détection des accès anormaux, indicateurs de gouvernance |
+| `ondine_retention` | chaque nuit à 3 h | purge de la zone d'arrivée après 7 jours (fichiers déjà ingérés et vérifiés) |
+
+**Planification incrémentale** (`planning.py`) : une tâche est recalculée si elle n'a jamais
+réussi, si son dernier run a échoué ou si une entrée a été écrite après le début de son dernier
+succès (fichiers ingérés, lots Kafka, runs de la couche précédente, lus dans le registre).
+Un nouveau fichier ne recalcule que son mois ; le flux ne recalcule que le mois en cours.
+
+**Reprise sur erreur** : chaque tâche est relancée 3 fois (2, 4 puis 8 min). Une tâche en
+échec n'empêche pas les autres mois ; elle est replanifiée au passage suivant. Après les
+relances, l'échec est publié vers Prometheus (alerte `TacheAirflowEnEchec`).
+
+**Ressources** : exécuteur local, pool `duckdb` de 2 emplacements (4 Go de mémoire DuckDB
+chacun, débordement sur disque au-delà) ; gold traite un mois à la fois.
+
+## Indicateurs métier
+
+Table `analytics.daily_kpis` (PostgreSQL), par jour et par canal : transactions, montants,
+fraudes confirmées et montant fraudé, refus du moteur de règles actuel, fraudes stoppées,
+clients légitimes refusés, délai moyen de déclaration. Chaque mois est remplacé en une
+transaction. Tableau de bord Grafana **Ondine - Pipelines, métier et gouvernance**.
+
+## Droits RGPD et sécurité des données
+
+| Mécanisme | Fonctionnement |
+|---|---|
+| Accès, portabilité | export JSON des données brutes du client dans le bucket `exports` (accès réservé au compte pipeline), manifeste avec les consentements |
+| Opposition | consentement prospection (PRC-003) retiré |
+| Effacement | exécuté **après validation du DPO** (`approved_by`) : suppression dans bronze, silver, gold et quarantaine, puis vérification qu'il ne reste aucune ligne |
+| Traçabilité | `governance.data_subject_actions`, journal d'audit, délai légal dans `governance.data_subject_requests_due` |
+| Accès anormaux | 5 règles sur `audit.access_log` : compte inconnu, finalité non autorisée, export massif, pic de volume, accès hors horaires ; incidents dans `governance.security_incidents` avec échéance CNIL (72 h) |
+| Alertes | incident grave ouvert, échéance CNIL proche, demande en retard, contrôles arrêtés |
+
+Démonstration :
 
 ```powershell
-docker compose up -d                                   # applique aussi les migrations (db-migrate)
-docker compose --profile pipelines build pipelines-cli
-docker compose --profile pipelines run --rm pipelines-cli ingest --dataset transactions --limit 1
-docker compose --profile pipelines run --rm pipelines-cli ingest --dataset all
-docker compose --profile pipelines run --rm pipelines-cli silver --dataset all
-docker compose --profile pipelines run --rm pipelines-cli gold
+# Demande d'accès (traitée au prochain passage de ondine_governance, ou en déclenchant le DAG)
+docker compose exec -T postgres psql -U ondine_admin -d ondine -c "INSERT INTO governance.data_subject_requests (request_id, client_id, request_type) VALUES ('DSR-DEMO-1', 'C00000042', 'access')"
+# Accès suspect : compte inconnu
+docker compose exec -T postgres psql -U ondine_admin -d ondine -c "INSERT INTO audit.access_log (actor, action, resource, purpose) VALUES ('compte.inconnu', 'export', 's3://bronze/referentials/clients', 'PRC-001')"
 ```
 
-Les commandes `silver` et `gold` reprennent là où elles s'étaient arrêtées : une tâche déjà
-réussie n'est pas recalculée (`--no-resume` pour tout refaire).
+## Lancer les traitements à la main (sans Airflow)
+
+```powershell
+docker compose --profile pipelines build pipelines-cli
+docker compose --profile pipelines run --rm pipelines-cli ingest --dataset all
+docker compose --profile pipelines run --rm pipelines-cli silver     # seulement ce qui a changé
+docker compose --profile pipelines run --rm pipelines-cli gold
+docker compose --profile pipelines run --rm pipelines-cli kpis
+docker compose --profile pipelines run --rm pipelines-cli rights
+docker compose --profile pipelines run --rm pipelines-cli security-scan
+docker compose --profile pipelines run --rm pipelines-cli retention --days 7
+```
+
+`--no-resume` force le recalcul complet de `silver`, `gold` ou `kpis`.
 
 ## Tests
 
@@ -138,3 +190,7 @@ zone d'arrivée avec le simulateur : intégrité, complétude, quarantaine, incr
 L'ingestion en flux est testée avec des messages produits par le simulateur et des doublures
 des clients Kafka : schéma identique au batch, topic d'erreurs, commit après écriture, aucun
 commit en cas d'échec, rééquilibrage, dédoublonnage silver des lots relus.
+`test_orchestration.py` vérifie la planification incrémentale, les indicateurs, les droits
+RGPD (export, effacement vérifié) et la détection d'accès anormaux ; `test_dags.py` charge les
+DAG quand Airflow est installé. Les 4 DAG ont aussi été exécutés de bout en bout avec
+Airflow 3.3.1 (`dag.test()`) sur un data lake local.

@@ -77,3 +77,57 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Délai Kafka -> bronze p95 > 3 min"
+
+  - name: traitements-batch
+    rules:
+      - alert: TraitementEnEchec
+        expr: pipeline_success == 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Échec du traitement {{ $labels.pipeline }} / {{ $labels.task }}"
+          description: "Détail dans ops.pipeline_runs ; Airflow relance puis replanifie la tâche."
+
+      - alert: TacheAirflowEnEchec
+        expr: time() - airflow_task_failure_timestamp_seconds < 900
+        labels: {severity: critical}
+        annotations:
+          summary: "Tâche Airflow {{ $labels.dag_id }}.{{ $labels.task_id }} en échec après relances"
+
+      - alert: TauxDeRejetEleve
+        expr: pipeline_rows_rejected / clamp_min(pipeline_rows_in, 1) > 0.01
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.pipeline }} / {{ $labels.task }} : plus de 1 % de lignes en quarantaine"
+
+      - alert: DebitTraitementDegrade
+        expr: pipeline_rows_per_second{pipeline=~"ingestion|silver"} < 20000 and pipeline_rows_out > 1000000
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.pipeline }} / {{ $labels.task }} : débit {{ $value | humanize }} lignes/s (référence > 300 000)"
+
+  - name: gouvernance
+    rules:
+      - alert: IncidentSecuriteGrave
+        expr: sum(security_incidents_open{severity="high"}) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $value }} incident(s) de sécurité grave(s) ouvert(s) : qualifier la violation potentielle"
+          description: "Voir governance.security_incidents_due ; notification CNIL sous 72 h si violation avérée."
+
+      - alert: EcheanceCNILProche
+        expr: security_incidents_deadline_at_risk > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Incident ouvert depuis plus de 48 h : échéance de notification CNIL (72 h) proche"
+
+      - alert: DemandeRGPDEnRetard
+        expr: dsr_overdue > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value }} demande(s) RGPD au-delà du délai légal d'un mois"
+
+      - alert: ControlesGouvernanceArretes
+        expr: time() - governance_last_check_timestamp_seconds > 3600
+        labels: {severity: warning}
+        annotations:
+          summary: "Aucun contrôle de gouvernance (droits, accès anormaux) depuis plus d'une heure"
