@@ -117,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     gold = sub.add_parser("gold", help="Silver -> gold (features et labels)")
     gold.add_argument("--month", default="all", help="AAAA-MM ou all")
     gold.add_argument("--no-resume", action="store_true", help="Recalculer même ce qui a réussi")
+    sub.add_parser("stream", help="Kafka -> bronze en continu (service stream-ingest)")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -134,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
             if failures:
                 logging.getLogger(__name__).error("Tâches en échec : %s", ", ".join(failures))
                 return 1
+        elif args.command == "stream":
+            from .stream.consumer import main as stream_main
+
+            stream_main(settings)
         elif args.command == "gold":
             failures = run_gold(settings, args.month, not args.no_resume)
             if failures:

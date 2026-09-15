@@ -12,16 +12,17 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | Étape | Contenu | État |
 |---|---|---|
 | 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait, validé sur le PC** |
-| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : bronze et silver validées, gold livrée |
+| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : bronze, silver et gold validées, ingestion en flux livrée |
 | 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | à venir |
 | 4. Plans écrits | Gouvernance, infrastructure, pipeline | à venir |
 
 ## Architecture actuelle
 
 ```
- Simulateur ──batch──▶ data/landing (CSV, JSON, e-mails)  ──▶ [pipelines, étape 2] ──▶ S3 : bronze / silver / gold
-     │
-     └──stream──▶ Kafka (3 brokers, réplication 3) ──▶ [scoring temps réel, étape 3]
+ Simulateur ──batch──▶ data/landing (CSV, JSON, e-mails) ──▶ ingestion batch ──┐
+     │                                                                           ├──▶ S3 : bronze ──▶ silver ──▶ gold
+     └──stream──▶ Kafka (3 brokers, réplication 3) ──▶ stream-ingest ×2 ─────────┘
+                        └──▶ topics d'erreurs *.dlq            [scoring temps réel, étape 3]
 
  PostgreSQL : audit (journal en ajout seul), gouvernance (registre RGPD, consentements, droits)
  Prometheus + Grafana : métriques et alertes de tous les composants
@@ -37,6 +38,8 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | `prometheus` | métriques, règles d'alerte | http://localhost:9090 | rétention 15 jours |
 | `grafana` | tableaux de bord | http://localhost:3000 | connexion obligatoire, pas d'inscription |
 | `simulator-stream` | flux de transactions | http://localhost:8000/health | API de pilotage protégée par jeton |
+| `stream-ingest` | Kafka → bronze (profil stream) | réseau interne, métriques :8001 | 2 répliques en groupe, commit après écriture |
+| `pipelines-cli` | traitements batch (profil pipelines) | – | voir `pipelines/README.md` |
 
 Tous les ports sont liés à `127.0.0.1` : rien n'est exposé sur le réseau local.
 
@@ -63,8 +66,9 @@ docker compose ps          # kafka-init et seaweed-init doivent finir en « Exit
 # 3. Historique de 12 mois (~5 min, 50 M de transactions)
 docker compose --profile generate run --rm simulator-batch
 
-# 4. Flux temps réel (l'arrêter quand il ne sert pas : docker compose stop simulator-stream)
-docker compose --profile stream up -d simulator-stream
+# 4. Flux temps réel + ingestion en bronze (--build : reconstruit les images si le code a changé)
+#    Arrêt quand il ne sert pas : docker compose --profile stream stop
+docker compose --profile stream up -d --build
 ```
 
 ### Mettre à jour le dépôt à partir d'un bundle livré
@@ -80,7 +84,7 @@ Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafan
 
 ```
 .
-├── docker-compose.yml          plateforme complète (profils : stream, generate)
+├── docker-compose.yml          plateforme complète (profils : stream, generate, pipelines)
 ├── .env.example                modèle des secrets (le vrai .env n'est jamais versionné)
 ├── scripts/generate_env.py     génération de secrets forts
 ├── infra/
@@ -103,4 +107,4 @@ Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafan
 | `Variable manquante : S3_...` | `.env` absent | `python scripts/generate_env.py` |
 | Mots de passe refusés après régénération de `.env` | les volumes gardent les anciens | `docker compose down -v` (efface les données) puis redémarrer |
 | Génération interrompue | arrêt du PC, manque de mémoire | relancer avec `--resume` : seules les parts manquantes sont refaites |
-| Disque qui se remplit | flux temps réel resté allumé | `docker compose stop simulator-stream` ; la rétention Kafka est bornée à 6 h et 512 Mo par partition |
+| Disque qui se remplit | flux temps réel resté allumé | `docker compose --profile stream stop` ; la rétention Kafka est bornée à 6 h et 512 Mo par partition |

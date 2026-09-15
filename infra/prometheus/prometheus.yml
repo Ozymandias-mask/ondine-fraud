@@ -30,3 +30,12 @@ scrape_configs:
     honor_labels: true
     static_configs:
       - targets: ["pushgateway:9091"]
+
+  # Consommateurs Kafka -> bronze : la résolution DNS du nom de service renvoie toutes les
+  # répliques, chacune est collectée séparément.
+  - job_name: stream-ingest
+    dns_sd_configs:
+      - names: ["stream-ingest"]
+        type: A
+        port: 8001
+        refresh_interval: 30s

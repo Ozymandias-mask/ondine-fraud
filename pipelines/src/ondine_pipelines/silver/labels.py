@@ -17,7 +17,10 @@ def build_labels(settings: Settings, orchestrator_id: str | None = None) -> dict
     try:
         with registry.run("silver", "fraud_labels", orchestrator_id) as run:
             require_input(con, pattern)
-            con.execute(f"CREATE TEMP TABLE bronze_rows AS SELECT * FROM read_parquet('{pattern}')")
+            con.execute(
+                "CREATE TEMP TABLE bronze_rows AS SELECT * FROM read_parquet("
+                f"'{pattern}', union_by_name = true)"
+            )
             run.rows_in = count(con, "bronze_rows")
             con.execute("""
                 CREATE TEMP TABLE validated AS

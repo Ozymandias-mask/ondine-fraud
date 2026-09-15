@@ -286,7 +286,8 @@ def _load_json(
 ) -> tuple[int, int]:
     reader = (
         f"read_json({sql_literal(str(path))}, format = 'newline_delimited', "
-        f"columns = {_columns_literal(EVENT_COLUMNS)}, ignore_errors = true)"
+        f"columns = {_columns_literal(EVENT_COLUMNS)}, ignore_errors = true, "
+        "hive_partitioning = false)"
     )
     query = f"SELECT *, {_lineage_columns(source, run)} FROM {reader}"
     loaded = copy_to_parquet(con, settings, query, target)

@@ -368,6 +368,44 @@ services:
         limits:
           memory: 8G
 
+  # ---------------------------------------------------------------- Ingestion en flux Kafka -> bronze (profil stream)
+  # 2 répliques dans le même groupe de consommateurs : les partitions sont réparties entre
+  # elles ; si l'une s'arrête, l'autre reprend ses partitions au dernier offset validé.
+  stream-ingest:
+    build: ./pipelines
+    image: ondine/pipelines:local
+    profiles: [stream]
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    entrypoint: ["ondine-pipelines"]
+    command: ["stream"]
+    environment:
+      <<: *pipeline-env
+      KAFKA_BOOTSTRAP: kafka-1:19092,kafka-2:19092,kafka-3:19092
+      STREAM_GROUP_ID: bronze-ingestion
+      STREAM_FLUSH_INTERVAL_S: "60"
+      STREAM_MAX_BATCH: "50000"
+      DUCKDB_THREADS: "2"
+      DUCKDB_MEMORY_LIMIT: 600MB
+    depends_on:
+      kafka-init: {condition: service_completed_successfully}
+      db-migrate: {condition: service_completed_successfully}
+      seaweed-init: {condition: service_completed_successfully}
+    # Laisse le temps d'écrire et de valider les lots en cours à l'arrêt.
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/metrics', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 1G
+
   # ---------------------------------------------------------------- Simulateur (profils à la demande)
   simulator-stream:
     build: ./simulator

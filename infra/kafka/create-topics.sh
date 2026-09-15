@@ -29,4 +29,10 @@ create_topic transactions.raw   6 21600000  536870912   # 6 h
 create_topic app-events.raw     6 21600000  536870912   # 6 h
 create_topic fraud-reports.raw  3 604800000 268435456   # 7 jours : labels peu volumineux
 
+# Topics d'erreurs (dead letter queues) : messages invalides écartés par l'ingestion, avec le
+# motif en en-tête. 7 jours pour analyser et rejouer ; volume faible attendu.
+create_topic transactions.raw.dlq   3 604800000 268435456
+create_topic app-events.raw.dlq     3 604800000 268435456
+create_topic fraud-reports.raw.dlq  1 604800000 268435456
+
 "$KAFKA_TOPICS" --bootstrap-server "$BOOTSTRAP" --describe

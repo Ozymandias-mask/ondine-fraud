@@ -3,8 +3,8 @@
 Code des traitements du data lake (bloc 3). Moteur de calcul : **DuckDB** (SQL analytique
 en colonnes, parallèle, capable de déborder sur disque) ; stockage : **Parquet sur S3**.
 
-> État : bronze et silver validées sur le PC (100 M de lignes), gold livrée. Flux Kafka,
-> orchestration Airflow et droits RGPD arrivent dans les prochaines livraisons.
+> État : bronze, silver et gold validées sur le PC (50 M de transactions). Ingestion en flux
+> livrée ; orchestration Airflow et droits RGPD arrivent dans les prochaines livraisons.
 
 ## Ingestion : zone d'arrivée → bronze
 
@@ -26,6 +26,39 @@ Pour chaque fichier décrit par un manifeste :
 
 Débit mesuré en développement (2 threads) : ~80 000 transactions/s et ~110 000 événements/s,
 contrôle SHA-256 compris.
+
+## Ingestion en flux : Kafka → bronze
+
+Service `stream-ingest` : **2 répliques** dans le groupe de consommateurs `bronze-ingestion`,
+qui se répartissent les 15 partitions des topics `transactions.raw`, `app-events.raw` et
+`fraud-reports.raw`. Les fichiers produits ont le même schéma et les mêmes partitions
+mensuelles que l'ingestion batch : silver et gold ne font pas la différence.
+
+Cycle d'un lot (toutes les 60 s ou 50 000 messages) :
+
+| Étape | Rôle |
+|---|---|
+| 1. Validation | JSON lisible, identifiant présent, horodatage et types convertibles |
+| 2. Écriture bronze | Parquet par partition Kafka et par mois, nom = plage d'offsets (`stream_p03_…-….parquet`) |
+| 3. Topic d'erreurs | messages invalides republiés dans `<topic>.dlq`, motif en en-tête (`dq_reason`) |
+| 4. Registre | `ops.stream_batches` : consommateur, partition, offsets, lignes, fichiers, période |
+| 5. Commit | l'offset n'est validé qu'après 2, 3 et 4 réussis |
+
+- **Aucune perte** : un plantage avant le commit fait relire le lot. Les coupures S3 passagères
+  sont réessayées ; un échec persistant arrête le consommateur, Docker le redémarre.
+- **Doublons** : un lot relu peut exister deux fois en bronze ; silver dédoublonne sur
+  l'identifiant métier (testé).
+- **Rééquilibrage** : stratégie `cooperative-sticky` ; une partition retirée est écrite et
+  validée avant d'être rendue. Arrêt propre sur SIGTERM (90 s de grâce).
+- **Supervision** (port 8001, collecte par découverte DNS des répliques) : messages lus,
+  lignes écrites, invalides par motif, retard par partition, délai Kafka → bronze, durée des
+  lots. Alertes : consommateur manquant, retard, blocage, messages invalides, délai p95.
+
+```powershell
+docker compose --profile stream up -d              # simulateur + 2 consommateurs
+docker compose --profile stream ps stream-ingest
+docker compose logs -f stream-ingest
+```
 
 ## Couche silver : bronze → silver
 
@@ -102,3 +135,6 @@ pytest pipelines/tests
 
 Les tests créent une base temporaire à partir des vrais scripts SQL du dépôt et une petite
 zone d'arrivée avec le simulateur : intégrité, complétude, quarantaine, incrémentalité, audit.
+L'ingestion en flux est testée avec des messages produits par le simulateur et des doublures
+des clients Kafka : schéma identique au batch, topic d'erreurs, commit après écriture, aucun
+commit en cas d'échec, rééquilibrage, dédoublonnage silver des lots relus.

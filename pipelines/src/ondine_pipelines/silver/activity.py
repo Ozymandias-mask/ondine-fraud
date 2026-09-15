@@ -56,7 +56,8 @@ def _load_month(
     pattern = month_glob(settings, "bronze", dataset, year, month)
     require_input(con, pattern)
     con.execute(
-        f"CREATE OR REPLACE TEMP TABLE bronze_rows AS SELECT * FROM read_parquet('{pattern}')"
+        f"CREATE OR REPLACE TEMP TABLE bronze_rows AS SELECT * FROM read_parquet('{pattern}',"
+        " union_by_name = true)"
     )
     con.execute(f"""
         CREATE OR REPLACE TEMP TABLE deduplicated AS

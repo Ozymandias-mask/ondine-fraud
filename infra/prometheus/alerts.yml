@@ -39,3 +39,41 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Latence d'acquittement Kafka p95 > 500 ms"
+
+  - name: ingestion-flux
+    rules:
+      - alert: ConsommateurFluxManquant
+        expr: count(up{job="stream-ingest"} == 1) < 2
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Moins de 2 consommateurs Kafka -> bronze actifs : plus de redondance"
+
+      - alert: RetardIngestionFlux
+        expr: sum by (topic) (stream_consumer_lag_messages) > 100000
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.topic }} : {{ $value | humanize }} messages en attente d'ingestion"
+
+      - alert: IngestionFluxBloquee
+        expr: >
+          (time() - max(stream_last_commit_timestamp_seconds) > 300)
+          and on() (sum(rate(stream_messages_consumed_total[5m])) > 0)
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "Messages lus mais aucun lot validé en bronze depuis 5 minutes"
+
+      - alert: MessagesInvalidesEnErreur
+        expr: sum by (topic, reason) (increase(stream_messages_invalid_total[10m])) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.topic }} : messages invalides ({{ $labels.reason }}) envoyés au topic d'erreurs"
+
+      - alert: LatenceIngestionFluxElevee
+        expr: histogram_quantile(0.95, sum by (le) (rate(stream_ingestion_latency_seconds_bucket[10m]))) > 180
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Délai Kafka -> bronze p95 > 3 min"
