@@ -150,3 +150,14 @@ def test_invalid_rows_are_quarantined_and_blocking_checks_stop_publication(
         / "invalid.parquet"
     ).exists()
     assert not (tmp_path / "lake" / "silver" / "transactions" / "year=2025" / "month=03").exists()
+
+
+def test_name_masking_avoids_false_positives_and_handles_accents():
+    from ondine_pipelines.silver.support import mask_names
+
+    text, residual = mask_names("Madame, Monsieur,\nCordialement,\nRémy Adam", "Rémy", "Adam")
+    assert text == "Madame, Monsieur,\nCordialement,\n[NOM] [NOM]" and not residual
+    text, _ = mask_names("Hervé\nHervé, hervé", "Emmanuel", "Hervé")
+    assert "Hervé" not in text and "hervé" not in text
+    text, _ = mask_names("Signé Jean-Pierre Le Roux", "Jean-Pierre", "Le Roux")
+    assert text == "Signé [NOM] [NOM]"

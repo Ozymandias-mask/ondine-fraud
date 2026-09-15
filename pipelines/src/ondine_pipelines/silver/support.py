@@ -9,6 +9,10 @@ contrôle bloquant vérifie qu'il n'en reste aucune détectable.
 from __future__ import annotations
 
 import logging
+import re
+from functools import lru_cache
+
+import pyarrow as pa
 
 from .. import quality
 from ..lake import connect, month_glob
@@ -32,21 +36,34 @@ PII_PATTERNS: dict[str, tuple[str, str]] = {
 
 
 def _mask_expression(column: str) -> str:
+    """Expression SQL masquant les motifs de données personnelles (IBAN, e-mail...)."""
     expression = column
     for pattern, replacement in PII_PATTERNS.values():
         expression = f"regexp_replace({expression}, '{pattern}', '{replacement}', 'g')"
-    # Prénom puis nom de l'expéditeur, où qu'ils apparaissent (signature, formule...).
-    # « \b » ne reconnaît pas les lettres accentuées (Hervé) : les limites de mot sont donc
-    # définies explicitement par « tout caractère qui n'est pas une lettre Unicode ».
-    # Chaque nom est traité deux fois : une occurrence qui en suit immédiatement une autre
-    # (« Hervé\nHervé ») partage son séparateur avec la précédente.
-    for name in ("first_name", "last_name", "first_name", "last_name"):
-        expression = (
-            f"CASE WHEN {name} IS NULL THEN {expression} ELSE regexp_replace({expression}, "
-            f"'(^|[^\\p{{L}}])' || regexp_escape({name}) || '([^\\p{{L}}]|$)',"
-            " '\\1[NOM]\\2', 'gi') END"
-        )
     return expression
+
+
+def mask_names(text: str | None, first_name: str | None, last_name: str | None) -> tuple[str, bool]:
+    """Remplace prénom et nom de l'expéditeur par [NOM]. Retourne (texte, nom résiduel ?).
+
+    Les limites de mot sont vérifiées avec des assertions Unicode : « Hervé » est reconnu,
+    mais « Adam » n'est pas remplacé à l'intérieur de « Madame » (faux positif évité).
+    Le contrôle de nom résiduel utilise exactement la même définition du mot.
+    """
+    if not text:
+        return text or "", False
+    names = sorted({n for n in (first_name, last_name) if n and n.strip()}, key=len, reverse=True)
+    if not names:
+        return text, False
+    pattern = _name_pattern(tuple(names))
+    masked = pattern.sub("[NOM]", text)
+    return masked, bool(pattern.search(masked))
+
+
+@lru_cache(maxsize=50_000)
+def _name_pattern(names: tuple[str, ...]) -> re.Pattern[str]:
+    alternatives = "|".join(re.escape(n) for n in names)
+    return re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE)
 
 
 def build_support_month(
@@ -76,14 +93,38 @@ def build_support_month(
                 f"len(regexp_extract_all(body, '{pattern}')) AS pii_{name}"
                 for name, (pattern, _) in PII_PATTERNS.items()
             )
-            con.execute(f"""
-                CREATE TEMP TABLE silver_rows AS
+            # 1. Motifs structurés masqués en SQL (vectorisé).
+            staged = con.execute(f"""
                 SELECT message_id, ticket_id, client_id, received_at, category, priority,
                        {_mask_expression("subject")} AS subject_masked,
                        {_mask_expression("body")} AS body_masked,
-                       {counts}
+                       first_name, last_name, {counts}
                 FROM joined
-            """)
+            """).to_arrow_table()
+            # 2. Noms de l'expéditeur masqués en Python (motif propre à chaque message).
+            first = staged.column("first_name").to_pylist()
+            last = staged.column("last_name").to_pylist()
+            subjects, bodies, residual_names = [], [], []
+            for subject, body, f, name in zip(
+                staged.column("subject_masked").to_pylist(),
+                staged.column("body_masked").to_pylist(),
+                first,
+                last,
+                strict=True,
+            ):
+                masked_subject, residual_subject = mask_names(subject, f, name)
+                masked_body, residual_body = mask_names(body, f, name)
+                subjects.append(masked_subject)
+                bodies.append(masked_body)
+                residual_names.append(residual_subject or residual_body)
+            staged = staged.drop_columns(
+                ["subject_masked", "body_masked", "first_name", "last_name"]
+            )
+            staged = staged.append_column("subject_masked", pa.array(subjects, pa.string()))
+            staged = staged.append_column("body_masked", pa.array(bodies, pa.string()))
+            staged = staged.append_column("residual_sender_name", pa.array(residual_names))
+            con.register("staged", staged)
+            con.execute("CREATE TEMP TABLE silver_rows AS SELECT * FROM staged")
             residual = " + ".join(
                 f"len(regexp_extract_all(body_masked, '{pattern}'))"
                 for name, (pattern, _) in PII_PATTERNS.items()
@@ -99,9 +140,7 @@ def build_support_month(
                 ),
                 quality.Check(
                     "no_residual_sender_name",
-                    "SELECT count(*) FROM silver_rows s JOIN joined j USING (message_id)"
-                    " WHERE j.last_name IS NOT NULL AND"
-                    " contains(lower(s.body_masked), lower(j.last_name))",
+                    "SELECT count(*) FROM silver_rows WHERE residual_sender_name",
                     "==",
                     0,
                     description="Nom de l'expéditeur absent du texte publié",
