@@ -62,6 +62,36 @@ def run_silver(settings: Settings, dataset: str, month: str, resume: bool) -> li
     return failures
 
 
+def run_gold(settings: Settings, month: str, resume: bool) -> list[str]:
+    """Construit les tables « première apparition » puis les features mois par mois."""
+    from .gold.features import build_features_month, build_first_seen
+    from .lake import with_retries
+    from .registry import Registry
+
+    registry = Registry(settings)
+    log = logging.getLogger("ondine_pipelines.cli")
+    failures: list[str] = []
+    # Toujours recalculées : elles dépendent de tout l'historique disponible.
+    try:
+        print("first_seen", with_retries(lambda: build_first_seen(settings)))
+    except Exception:
+        log.exception("first_seen : échec, features non calculables")
+        return ["first_seen"]
+    periods = registry.ingested_periods("transactions") if month == "all" else [month]
+    for period in periods:
+        y, m = int(period[:4]), int(period[5:7])
+        task = f"transaction_features_{y}-{m:02d}"
+        if resume and registry.last_success("gold", task):
+            log.info("%s : déjà construit, ignoré", task)
+            continue
+        try:
+            print(task, with_retries(lambda y=y, m=m: build_features_month(settings, y, m)))
+        except Exception:
+            log.exception("%s : échec", task)
+            failures.append(task)
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     """Point d'entrée : `ondine-pipelines ingest --dataset transactions`."""
     parser = argparse.ArgumentParser(prog="ondine-pipelines")
@@ -84,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     silver.add_argument("--month", default="all", help="AAAA-MM ou all")
     silver.add_argument("--no-resume", action="store_true", help="Recalculer même ce qui a réussi")
+    gold = sub.add_parser("gold", help="Silver -> gold (features et labels)")
+    gold.add_argument("--month", default="all", help="AAAA-MM ou all")
+    gold.add_argument("--no-resume", action="store_true", help="Recalculer même ce qui a réussi")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -98,6 +131,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(dataset, ingest_dataset(settings, dataset, args.limit))
         elif args.command == "silver":
             failures = run_silver(settings, args.dataset, args.month, not args.no_resume)
+            if failures:
+                logging.getLogger(__name__).error("Tâches en échec : %s", ", ".join(failures))
+                return 1
+        elif args.command == "gold":
+            failures = run_gold(settings, args.month, not args.no_resume)
             if failures:
                 logging.getLogger(__name__).error("Tâches en échec : %s", ", ".join(failures))
                 return 1

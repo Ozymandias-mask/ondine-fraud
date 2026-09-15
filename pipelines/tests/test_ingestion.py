@@ -31,9 +31,20 @@ def test_every_row_reaches_bronze(ingested, base_settings, landing):
     expected = {}
     for f in discover(landing):
         expected[f.dataset] = expected.get(f.dataset, 0) + f.rows
-    for dataset, summary in ingested.items():
-        assert summary["rows"] + summary["rejected"] == expected[dataset], dataset
-        assert summary["rejected"] == 0
+    # Totaux lus dans le registre : indépendants de l'ordre d'exécution des modules de test.
+    with psycopg.connect(base_settings.pg_dsn) as con:
+        loaded = dict(
+            con.execute(
+                "SELECT dataset, sum(rows_loaded + rows_rejected) FROM ops.file_ingestions GROUP BY 1"
+            ).fetchall()
+        )
+        rejected = con.execute(
+            "SELECT coalesce(sum(rows_rejected), 0) FROM ops.file_ingestions"
+            " WHERE source_path NOT LIKE '%support_tickets%'"
+        ).fetchone()[0]
+    for dataset in ingested:
+        assert loaded[dataset] == expected[dataset], dataset
+    assert rejected == 0
 
 
 def test_bronze_schema_is_unified_across_versions(ingested, base_settings):

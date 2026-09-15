@@ -25,13 +25,14 @@ def validate_and_publish(
     target: str,
     checks: list[quality.Check],
     order_by: str | None = None,
+    layer: str = "silver",
 ) -> int:
     """Contrôle la table, enregistre les résultats puis, si tout est conforme, publie en Parquet.
 
     Les résultats qualité sont enregistrés même en cas d'échec (preuve et diagnostic).
     """
     results = quality.run_checks(con, checks)
-    registry.record_quality(run, "silver", dataset, results)
+    registry.record_quality(run, layer, dataset, results)
     quality.enforce(dataset, results)
     order = f" ORDER BY {order_by}" if order_by else ""
     written = copy_to_parquet(con, settings, f"SELECT * FROM {table}{order}", target)

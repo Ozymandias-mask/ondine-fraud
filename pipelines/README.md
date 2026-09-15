@@ -3,7 +3,7 @@
 Code des traitements du data lake (bloc 3). Moteur de calcul : **DuckDB** (SQL analytique
 en colonnes, parallèle, capable de déborder sur disque) ; stockage : **Parquet sur S3**.
 
-> État : ingestion bronze (validée sur le PC) et couche silver livrées. Gold, flux Kafka,
+> État : bronze et silver validées sur le PC (100 M de lignes), gold livrée. Flux Kafka,
 > orchestration Airflow et droits RGPD arrivent dans les prochaines livraisons.
 
 ## Ingestion : zone d'arrivée → bronze
@@ -48,6 +48,37 @@ contrôle SHA-256 compris.
   de la source à transmettre à l'équipe KYC.
 - Débit mesuré en développement (2 threads) : ~130 000 lignes/s (validation, pseudonymisation, écriture).
 
+## Couche gold : features et labels pour le modèle
+
+Table `gold/transaction_features` (une ligne par transaction, par mois) : 63 colonnes.
+
+| Famille | Variables | Fraude visée |
+|---|---|---|
+| Transaction | montant (et log), canal, mode de saisie, MCC et catégorie, pays, heure, nuit, week-end, 3-D Secure, wallet | contexte |
+| Vélocité carte | opérations sur 1 h et 24 h, montant 24 h, marchands distincts 1 h, petits achats en ligne 1 h, refus 1 h, délai depuis l'opération précédente | test de carte |
+| Historique client | opérations, montant moyen et maximal sur 30 jours, ratio au montant habituel, pays distincts sur 7 jours, virements 24 h | montant inhabituel |
+| Déplacement | distance et vitesse depuis le paiement physique précédent (haversine) | carte clonée |
+| Appareil | ancienneté de l'appareil pour ce client | prise de contrôle |
+| Bénéficiaire | premier virement, nouveaux payeurs du bénéficiaire sur 30 jours | comptes mules, faux conseiller |
+| Session | échecs de connexion, réinitialisations, connexions depuis l'étranger ou un nouvel appareil (24 h), OTP par SMS (1 h), changement de méthode d'authentification et enrôlement wallet (7 jours) | prise de contrôle, SIM swap, wallet frauduleux |
+
+**Pas de fuite du futur.** Toutes les fenêtres excluent la transaction courante et ne regardent
+que le passé ; un test recalcule la vélocité à la main sur un échantillon. Le label porte
+sa date de connaissance (`label_reported_at`) : l'entraînement n'utilisera que les labels
+connus à la date de coupure. `history_complete` signale les 30 premiers jours (recul insuffisant).
+
+**Équité.** `age_band`, `region`, `segment` et `tenure_days` sont présents pour les tests de
+biais, pas comme variables d'entrée. La décision des règles actuelles (`legacy_auth_status`)
+sert de point de comparaison. Aucun pseudonyme ne sort de la couche silver.
+
+**Mémoire bornée.** Seules les colonnes et les événements utiles sont chargés, avec le recul
+nécessaire (30 jours pour les transactions, 8 jours pour les événements) ; DuckDB déborde sur
+disque au-delà de sa limite mémoire.
+
+Contrôles bloquants : une ligne par transaction silver, identifiants uniques, cohérence
+temporelle des fenêtres, label postérieur à la transaction, bornes du mois, absence de
+pseudonyme. Avertissements : taux de fraude plausible (0,02 % à 2 %).
+
 ## Lancer les traitements (sans Airflow)
 
 ```powershell
@@ -56,7 +87,11 @@ docker compose --profile pipelines build pipelines-cli
 docker compose --profile pipelines run --rm pipelines-cli ingest --dataset transactions --limit 1
 docker compose --profile pipelines run --rm pipelines-cli ingest --dataset all
 docker compose --profile pipelines run --rm pipelines-cli silver --dataset all
+docker compose --profile pipelines run --rm pipelines-cli gold
 ```
+
+Les commandes `silver` et `gold` reprennent là où elles s'étaient arrêtées : une tâche déjà
+réussie n'est pas recalculée (`--no-resume` pour tout refaire).
 
 ## Tests
 

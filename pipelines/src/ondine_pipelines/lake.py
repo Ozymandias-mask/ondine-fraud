@@ -34,6 +34,10 @@ def connect(settings: Settings) -> duckdb.DuckDBPyConnection:
         }
     )
     con.execute("SET TimeZone = 'UTC'")
+    # L'ordre d'insertion n'a pas à être conservé (tri explicite à l'écriture) : DuckDB
+    # peut alors traiter et écrire en flux, avec beaucoup moins de mémoire.
+    con.execute("SET preserve_insertion_order = false")
+    con.execute("SET temp_directory = '/tmp/duckdb_spill'")
     if settings.uses_s3:
         # Extension installée dans l'image Docker (aucun téléchargement à l'exécution).
         con.execute("LOAD httpfs")
