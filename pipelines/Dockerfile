@@ -2,6 +2,13 @@
 # Contexte de construction = racine du dépôt (les paquets pipelines/ et ml/ y sont copiés).
 FROM apache/airflow:3.3.1-python3.12
 
+# LightGBM a besoin de la bibliothèque OpenMP (libgomp), absente de l'image Airflow.
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+USER airflow
+
 COPY pipelines/requirements.txt /tmp/requirements.txt
 # apache-airflow est répété à sa version exacte : pip refuse alors toute mise à jour ou
 # rétrogradation silencieuse d'Airflow causée par nos dépendances.
