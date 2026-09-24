@@ -178,3 +178,28 @@ def test_promotion_applies_the_written_criteria(trained, ml_settings):
     # Le retour arrière est possible même quand aucun champion précédent n'existe : il le dit.
     retour = rollback(ml_settings)
     assert retour.promoted is False and "aucun champion précédent" in retour.reasons[0]
+
+
+def test_every_command_of_the_cli_runs(trained, ml_settings, lake, monkeypatch):
+    """Chaque sous-commande démarre réellement : une commande livrée cassée est inacceptable.
+
+    Les commandes sont le seul point de contact avec la solution en exploitation ; un import
+    manquant ne doit pas se découvrir en production.
+    """
+    from ondine_ml.cli import main
+
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", ml_settings.tracking_uri)
+    monkeypatch.setenv("ONDINE_ML_MODEL_NAME", ml_settings.model_name)
+    monkeypatch.setenv("ONDINE_ML_EXPERIMENT", ml_settings.experiment)
+    monkeypatch.setenv("LAKE_ROOT", lake.lake_root)
+    monkeypatch.setenv("LANDING_ROOT", str(lake.landing_root))
+    monkeypatch.setenv("PIPELINE_PG_DSN", lake.pg_dsn)
+    monkeypatch.setenv("PSEUDONYMISATION_KEY", "clé-de-test")
+    monkeypatch.setenv("ONDINE_ML_TEST", ml_settings.test_bounds)
+    monkeypatch.setenv("ONDINE_ML_VALID", ml_settings.valid_bounds)
+    monkeypatch.setenv("ONDINE_ML_TRAIN", ml_settings.train_bounds)
+
+    assert main(["metrics", "--alias", "challenger"]) == 0
+    assert main(["explain", "--alias", "challenger", "--rank", "1"]) == 0
+    assert main(["promote", "--alias", "challenger", "--force"]) == 0
+    assert main(["rollback"]) in (0, 2)

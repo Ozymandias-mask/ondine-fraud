@@ -106,6 +106,25 @@ def check(candidate: dict[str, float], champion: dict[str, float], ml: MlSetting
     return reasons
 
 
+def metrics_of(ml: MlSettings, alias: str = CANDIDATE_ALIAS) -> dict[str, object]:
+    """Toutes les métriques enregistrées pour la version portant cet alias.
+
+    Évite de réentraîner pour relire un chiffre : le suivi d'expérience est la source de
+    vérité, la ligne de commande ne fait que l'interroger.
+    """
+    mlflow.set_tracking_uri(ml.tracking_uri)
+    client = mlflow.MlflowClient(ml.tracking_uri)
+    version = _version(client, ml.model_name, alias)
+    if version is None:
+        return {"alias": alias, "erreur": f"aucun modèle sous l'alias « {alias} »"}
+    return {
+        "alias": alias,
+        "version": version.version,
+        "run_id": version.run_id,
+        "metriques": {k: round(v, 6) for k, v in sorted(_metrics(client, version).items())},
+    }
+
+
 def promote(
     ml: MlSettings, candidate_alias: str = CANDIDATE_ALIAS, force: bool = False
 ) -> Decision:
