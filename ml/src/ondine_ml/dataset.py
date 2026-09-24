@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 import duckdb
@@ -173,6 +174,129 @@ def fingerprint(con: duckdb.DuckDBPyConnection, pattern: str, split: Split) -> d
     }
 
 
+CONTEXT_CATEGORICAL = (
+    "legacy_auth_status",
+    "age_band",
+    "region",
+    "segment",
+    "channel",
+    "fraud_claim_category",
+)
+
+
+def _connect_ordered(settings: Settings) -> duckdb.DuckDBPyConnection:
+    """Connexion DuckDB qui préserve l'ordre des lignes.
+
+    L'ordre des données d'entraînement influe sur le modèle : sans cette garantie, deux
+    entraînements sur les mêmes données donneraient des modèles légèrement différents.
+    """
+    con = connect(settings)
+    con.execute("SET preserve_insertion_order = true")
+    return con
+
+
+def category_values(
+    con: duckdb.DuckDBPyConnection, pattern: str, where: str, columns: list[str]
+) -> dict[str, list[str]]:
+    """Valeurs distinctes des colonnes catégorielles, en une seule lecture.
+
+    Fixer les catégories avant de lire les données permet de charger par lots sans que
+    chaque lot ait ses propres catégories (ce qui ferait retomber les colonnes en texte,
+    bien plus coûteux en mémoire).
+    """
+    if not columns:
+        return {}
+    selects = ", ".join(f'array_agg(DISTINCT "{c}")' for c in columns)
+    row = con.execute(f"SELECT {selects} FROM read_parquet('{pattern}') WHERE {where}").fetchone()
+    return {
+        column: sorted(str(v) for v in (values or []) if v is not None)
+        for column, values in zip(columns, row, strict=True)
+    }
+
+
+def _compact(
+    frame: pd.DataFrame, categories: dict[str, list[str]]
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    """Convertit un lot brut en (variables, label, contexte) aux types les plus compacts."""
+    features = frame[[c for c in frame.columns if c not in EXCLUDED]].copy()
+    for column in features.columns:
+        if column in categories:
+            values = features[column].astype("object")
+            values = values.where(values.isin(categories[column]), other=None)
+            features[column] = pd.Categorical(values, categories=categories[column])
+        elif features[column].dtype == "bool":
+            # float32 partout : un booléen manquant reste représentable (schéma du modèle).
+            features[column] = features[column].astype("float32")
+        else:
+            features[column] = pd.to_numeric(features[column], errors="coerce").astype("float32")
+    context = frame[[c for c in CONTEXT if c in frame.columns]].copy()
+    for column in CONTEXT_CATEGORICAL:
+        if column in context.columns:
+            context[column] = context[column].astype("category")
+    if "amount" in context.columns:
+        context["amount"] = pd.to_numeric(context["amount"], errors="coerce").astype("float32")
+    return features, frame[TARGET].astype("int8"), context
+
+
+def _where(bounds: tuple[str, str], negative_rate: float, seed: int) -> str:
+    where = (
+        f"strftime(event_date, '%Y-%m') BETWEEN '{bounds[0]}' AND '{bounds[1]}'"
+        " AND history_complete"
+    )
+    if negative_rate < 1:
+        # Sous-échantillonnage reproductible : hachage de l'identifiant, pas de tirage aléatoire.
+        where += (
+            f" AND ({TARGET} OR (hash(transaction_id || '{seed}') % 1000000)"
+            f" < {negative_rate * 1e6:.0f})"
+        )
+    return where
+
+
+def iter_chunks(
+    settings: Settings,
+    bounds: tuple[str, str],
+    categories: dict[str, list[str]] | None = None,
+    feature_names: list[str] | None = None,
+    batch_rows: int = 400_000,
+    negative_rate: float = 1.0,
+    seed: int = 42,
+) -> Iterator[Dataset]:
+    """Parcourt un intervalle de mois par lots, sans jamais tout charger en mémoire.
+
+    C'est ce qui permet d'évaluer douze millions de transactions sur une machine de bureau :
+    chaque lot est scoré puis libéré, seules les colonnes utiles à l'évaluation sont gardées.
+    """
+    con = _connect_ordered(settings)
+    try:
+        pattern = gold_pattern(settings)
+        all_columns = [
+            r[0]
+            for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{pattern}')").fetchall()
+        ]
+        columns = [
+            c
+            for c in sorted(
+                set(c for c in all_columns if c not in EXCLUDED) | set(CONTEXT) | {TARGET}
+            )
+            if c in all_columns
+        ]
+        where = _where(bounds, negative_rate, seed)
+        if categories is None:
+            categories = category_values(
+                con, pattern, where, [c for c in CATEGORICAL if c in columns]
+            )
+        reader = con.execute(
+            f"SELECT {', '.join(columns)} FROM read_parquet('{pattern}') WHERE {where}"
+        ).to_arrow_reader(batch_rows)  # flux de lots Arrow : rien n'est matérialisé
+        for batch in reader:
+            features, target, context = _compact(batch.to_pandas(), categories)
+            if feature_names is not None:
+                features = features[feature_names]
+            yield Dataset(name="chunk", features=features, target=target, context=context)
+    finally:
+        con.close()
+
+
 def _load_split(
     con: duckdb.DuckDBPyConnection,
     pattern: str,
@@ -181,59 +305,32 @@ def _load_split(
     columns: list[str],
     negative_rate: float,
     seed: int,
+    categories: dict[str, list[str]] | None = None,
 ) -> Dataset:
-    where = (
-        f"strftime(event_date, '%Y-%m') BETWEEN '{bounds[0]}' AND '{bounds[1]}'"
+    """Charge un jeu complet, lot par lot, en types compacts."""
+    where = _where(bounds, negative_rate, seed)
+    total = con.execute(
+        f"SELECT count(*) FROM read_parquet('{pattern}') WHERE"
+        f" strftime(event_date, '%Y-%m') BETWEEN '{bounds[0]}' AND '{bounds[1]}'"
         " AND history_complete"
-    )
-    total = con.execute(f"SELECT count(*) FROM read_parquet('{pattern}') WHERE {where}").fetchone()[
-        0
-    ]
-    # Sous-échantillonnage reproductible : hachage de l'identifiant, pas de tirage aléatoire.
-    sampling = (
-        f" AND ({TARGET} OR (hash(transaction_id || '{seed}') % 1000000)"
-        f" < {negative_rate * 1e6:.0f})"
-        if negative_rate < 1
-        else ""
-    )
-    frame = con.execute(
-        f"SELECT {', '.join(columns)} FROM read_parquet('{pattern}')"
-        f" WHERE {where}{sampling} ORDER BY event_time"
-    ).df()
-    # Une colonne de contexte peut aussi être une variable d'entrée (le canal, le montant) :
-    # seule la liste EXCLUDED décide de ce que le modèle voit.
-    features = frame[[c for c in frame.columns if c not in EXCLUDED]].copy()
-    for column in features.columns:
-        if column in CATEGORICAL:
-            features[column] = features[column].astype("category")
-        elif features[column].dtype == "bool":
-            # float32 partout : un booléen manquant reste représentable (schéma du modèle).
-            features[column] = features[column].astype("float32")
-        elif str(features[column].dtype).startswith(("object", "decimal")):
-            features[column] = pd.to_numeric(features[column], errors="coerce").astype("float32")
-        else:
-            features[column] = features[column].astype("float32")
-    context = frame[[c for c in CONTEXT if c in frame.columns]].copy()
-    # Mémoire : sur 12 millions de lignes, ces colonnes répétitives coûtent plusieurs Go
-    # en texte brut et presque rien en catégories.
-    for column in (
-        "legacy_auth_status",
-        "age_band",
-        "region",
-        "segment",
-        "channel",
-        "fraud_claim_category",
-    ):
-        if column in context.columns:
-            context[column] = context[column].astype("category")
+    ).fetchone()[0]
+    if categories is None:
+        categories = category_values(con, pattern, where, [c for c in CATEGORICAL if c in columns])
+    reader = con.execute(
+        f"SELECT {', '.join(columns)} FROM read_parquet('{pattern}') WHERE {where}"
+    ).to_arrow_reader(400_000)
+    parts = [_compact(batch.to_pandas(), categories) for batch in reader]
+    if not parts:
+        raise ValueError(f"Aucune donnée pour {name} ({bounds[0]}..{bounds[1]})")
     dataset = Dataset(
         name=name,
-        features=features,
-        target=frame[TARGET].astype("int8"),
-        context=context,
+        features=pd.concat([p[0] for p in parts], ignore_index=True),
+        target=pd.concat([p[1] for p in parts], ignore_index=True),
+        context=pd.concat([p[2] for p in parts], ignore_index=True),
         rows_before_sampling=int(total),
         negative_sampling_rate=negative_rate,
     )
+    del parts
     logger.info(
         "%s : %d lignes (%d avant échantillonnage), %d fraudes (%.3f %%)",
         name,
@@ -254,37 +351,6 @@ def months_between(bounds: tuple[str, str]) -> list[str]:
     return [f"{i // 12}-{i % 12 + 1:02d}" for i in range(first, last + 1)]
 
 
-def load_month(
-    settings: Settings,
-    period: str,
-    feature_names: list[str],
-    categories: dict[str, list[str]],
-    seed: int = 42,
-) -> Dataset:
-    """Charge un seul mois, aligné sur les colonnes et catégories du modèle.
-
-    Évaluer mois par mois évite de tenir douze millions de lignes en mémoire d'un coup.
-    """
-    con = connect(settings)
-    try:
-        pattern = gold_pattern(settings)
-        all_columns = [
-            r[0]
-            for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{pattern}')").fetchall()
-        ]
-        columns = sorted(
-            set(c for c in all_columns if c not in EXCLUDED) | set(CONTEXT) | {TARGET, "event_time"}
-        )
-        columns = [c for c in columns if c in all_columns]
-        dataset = _load_split(con, pattern, period, (period, period), columns, 1.0, seed)
-    finally:
-        con.close()
-    dataset.features = dataset.features[feature_names]
-    for column, values in categories.items():
-        dataset.features[column] = dataset.features[column].cat.set_categories(values)
-    return dataset
-
-
 def load(
     settings: Settings,
     split: Split | None = None,
@@ -294,13 +360,17 @@ def load(
 ) -> DatasetBundle:
     """Charge les jeux demandés depuis la couche gold.
 
-    `negative_sampling_rate` ne s'applique qu'à l'entraînement : la validation et le test
-    gardent toutes les transactions, sinon les métriques ne refléteraient pas la réalité.
+    `negative_sampling_rate` s'applique aux jeux qui servent à **construire** le modèle
+    (entraînement et validation : la validation ne sert qu'à l'arrêt anticipé, un mois entier
+    en mémoire n'y apporterait rien). Le jeu de test, lui, garde toutes les transactions :
+    c'est lui qui donne les chiffres annoncés. Le seuil de décision, qui dépend du taux réel
+    d'alertes, est calculé à part sur la validation complète, lue par lots (voir `train.py`).
+
     `parts` permet de ne charger que ce dont on a besoin : sur 50 millions de lignes, garder
     les trois jeux en mémoire en même temps est inutile et coûteux.
     """
     split = split or Split()
-    con = connect(settings)
+    con = _connect_ordered(settings)
     try:
         pattern = gold_pattern(settings)
         available = _months(con, pattern)
@@ -320,7 +390,7 @@ def load(
                 name,
                 getattr(split, name),
                 columns,
-                negative_sampling_rate if name == "train" else 1.0,
+                negative_sampling_rate if name in ("train", "valid") else 1.0,
                 seed,
             )
             for name in parts

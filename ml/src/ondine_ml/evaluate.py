@@ -171,8 +171,11 @@ def fairness_report(
     for attribute in attributes:
         if attribute not in dataset.context:
             continue
-        for value, index in dataset.context.groupby(attribute).groups.items():
-            mask = dataset.context.index.isin(index)
+        column = dataset.context[attribute]
+        # Comparaison valeur par valeur : sur des dizaines de millions de lignes, un
+        # `groupby` matérialiserait un index par groupe, pour un résultat identique.
+        for value in sorted(v for v in column.dropna().unique()):
+            mask = (column == value).to_numpy()
             positives = (y_true == 1) & mask
             negatives = (y_true == 0) & mask
             rows.append(
@@ -286,10 +289,16 @@ def robustness_report(
 
 def monthly_report(dataset: Dataset, scores: np.ndarray, threshold: float) -> pd.DataFrame:
     """Performance mois par mois : met en évidence une dérive (nouveau mode opératoire)."""
-    frame = dataset.context.copy()
-    frame["score"] = scores
-    frame["is_fraud"] = dataset.target.to_numpy()
-    frame["mois"] = pd.to_datetime(frame["event_date"]).dt.strftime("%Y-%m")
+    # Seules trois colonnes sont nécessaires : recopier tout le contexte doublerait la
+    # mémoire sur un jeu de test de plusieurs millions de lignes.
+    frame = pd.DataFrame(
+        {
+            # Type « période » (entier) plutôt que texte : 8 octets par ligne au lieu de ~60.
+            "mois": pd.to_datetime(dataset.context["event_date"]).dt.to_period("M"),
+            "score": scores,
+            "is_fraud": dataset.target.to_numpy(),
+        }
+    )
     rows = []
     for month, group in frame.groupby("mois"):
         flagged = group["score"].to_numpy() >= threshold
@@ -297,7 +306,7 @@ def monthly_report(dataset: Dataset, scores: np.ndarray, threshold: float) -> pd
         detected = float(((y_true == 1) & flagged).sum())
         rows.append(
             {
-                "mois": month,
+                "mois": str(month),
                 "transactions": len(group),
                 "fraudes": int(y_true.sum()),
                 "rappel": detected / max(float(y_true.sum()), 1),

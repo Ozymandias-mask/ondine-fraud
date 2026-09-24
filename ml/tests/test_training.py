@@ -43,10 +43,12 @@ def test_features_contain_no_leak_and_splits_are_chronological(lake, ml_settings
     train_max = bounds(bundle.train)[1]
     valid_min, valid_max = bounds(bundle.valid)
     assert train_max < valid_min and valid_max < bounds(bundle.test)[0]
-    # Le sous-échantillonnage ne touche que l'entraînement.
+    # Le sous-échantillonnage touche les jeux d'apprentissage, jamais le test : ce sont les
+    # chiffres du test qui sont annoncés.
     assert bundle.train.rows_before_sampling > len(bundle.train.target)
-    assert bundle.valid.rows_before_sampling == len(bundle.valid.target)
-    assert bundle.train.fraud_rate > bundle.valid.fraud_rate  # fraudes toutes conservées
+    assert bundle.valid.rows_before_sampling > len(bundle.valid.target)
+    assert bundle.test.rows_before_sampling == len(bundle.test.target)
+    assert bundle.train.fraud_rate > bundle.test.fraud_rate  # fraudes toutes conservées
 
 
 def test_training_registers_a_usable_model_with_its_report(trained, ml_settings):

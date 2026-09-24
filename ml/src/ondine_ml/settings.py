@@ -21,8 +21,9 @@ class MlSettings:
     early_stopping_rounds: int = 80
     alert_budget: float = 0.001
     shap_sample: int = 20_000
-    # Lignes conservées par mois de test pour la robustesse et l'explicabilité.
-    robustness_sample: int = 50_000
+    # Lignes du jeu de test conservées avec leurs variables (robustesse, explicabilité) :
+    # le reste n'est gardé que sous forme de score, quel que soit le volume évalué.
+    robustness_sample: int = 200_000
     train_bounds: str = "2025-01..2025-08"
     valid_bounds: str = "2025-09..2025-09"
     test_bounds: str = "2025-10..2025-12"

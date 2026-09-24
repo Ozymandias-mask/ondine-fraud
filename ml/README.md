@@ -14,8 +14,19 @@ l'autorisation d'un paiement, s'il doit être bloqué ou signalé.
 | Entrées | ~45 variables de la couche gold | calculées à date, sans fuite du futur |
 | Sortie | probabilité de fraude, décision, facteurs explicatifs | l'analyste voit pourquoi, le client peut être informé |
 | Découpage | 8 mois d'entraînement, 1 de validation, 3 de test | on entraîne sur le passé et on mesure sur le futur, comme en production |
-| Déséquilibre | toutes les fraudes, 5 % des transactions légitimes | entraînement rapide ; les probabilités sont ensuite corrigées pour revenir au taux réel |
+| Déséquilibre | toutes les fraudes, 5 % des transactions légitimes (entraînement **et** validation) | entraînement rapide ; les probabilités sont ensuite corrigées pour revenir au taux réel |
 | Seuil | le meilleur coût métier **dans** le budget d'alertes (0,1 % des transactions) | l'équipe fraude ne peut pas traiter plus |
+
+Le jeu de **test n'est jamais échantillonné** : ce sont ses chiffres qui sont annoncés. Le
+seuil, qui dépend du taux d'alertes réel, est calculé sur le mois de validation complet,
+relu par lots après l'entraînement.
+
+**Tenue à l'échelle** : 50 millions de transactions ne tiennent pas en mémoire. Les jeux
+d'apprentissage sont sous-échantillonnés puis libérés dès le modèle entraîné ; la validation
+et le test sont ensuite parcourus par lots de 400 000 lignes dont on ne garde que le score et
+six colonnes d'évaluation, plus un échantillon borné (200 000 lignes) pour la robustesse et
+l'explicabilité. L'empreinte mémoire ne dépend donc pas du volume évalué (mesurée à ~2,5 Gio
+sur 50 M de transactions, conteneur limité à 10 Gio).
 
 **Aucune fuite** : les identifiants, les labels, la décision du moteur de règles actuel et
 les attributs d'équité (tranche d'âge, région, segment, ancienneté) sont exclus des entrées.

@@ -1,9 +1,14 @@
 """Entraînement du modèle de détection de fraude et suivi de l'expérience.
 
-Déroulé : chargement des trois jeux (découpage temporel), entraînement LightGBM avec arrêt
-anticipé sur la validation, choix du seuil de décision sur la validation, évaluation
-complète sur le test (jamais vu), puis enregistrement dans MLflow (paramètres, métriques,
-graphiques, modèle, empreinte des données).
+Déroulé : chargement de l'entraînement et de la validation (découpage temporel), entraînement
+LightGBM avec arrêt anticipé, choix du seuil de décision sur la validation complète relue par
+lots, évaluation complète sur le test (jamais vu, lu lui aussi par lots), puis enregistrement
+dans MLflow (paramètres, métriques, graphiques, modèle, empreinte des données).
+
+Mémoire : à aucun moment un mois entier de transactions n'est chargé avec ses variables. Les
+jeux d'apprentissage sont sous-échantillonnés et libérés dès l'entraînement terminé ; la
+validation et le test sont ensuite parcourus par lots, dont seuls les scores et quelques
+colonnes d'évaluation sont conservés. L'empreinte mémoire ne dépend donc pas du volume évalué.
 
 Reproductibilité : graine fixe, sous-échantillonnage par hachage (et non par tirage),
 versions des bibliothèques et empreinte des données enregistrées avec le modèle.
@@ -40,6 +45,11 @@ from .settings import MlSettings  # noqa: E402
 logger = logging.getLogger(__name__)
 
 MODEL_ARTIFACT = "model"
+
+# Colonnes de contexte conservées pour tout le jeu de test : coût métier, équité, dérive et
+# comparaison au moteur de règles. L'identifiant de transaction en est exclu — inutile ici, et
+# c'est la colonne la plus lourde (du texte) sur plusieurs millions de lignes.
+EVAL_CONTEXT = ("event_date", "amount", "legacy_auth_status", "age_band", "region", "segment")
 
 # Paramètres volontairement sobres : un modèle plus petit se réentraîne vite, s'explique
 # mieux et sur-apprend moins sur un phénomène aussi rare que la fraude.
@@ -105,36 +115,92 @@ def _save_artifacts(directory: Path, artifacts: dict[str, object]) -> None:
             target.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _score_test_by_month(
+def _stream_valid(
+    settings: Settings, split: ds.Split, model: FraudModel, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Score la validation **complète** par lots : labels, probabilités et montants.
+
+    Le seuil de décision doit respecter un budget d'alertes exprimé en pourcentage des
+    transactions réelles : il faut donc le mois entier, sans sous-échantillonnage. Seuls
+    trois vecteurs sont conservés (pas les variables), la mémoire reste négligeable.
+    """
+    targets, scores, amounts = [], [], []
+    for chunk in ds.iter_chunks(
+        settings,
+        split.valid,
+        categories=model.categories,
+        feature_names=model.feature_names,
+        seed=seed,
+    ):
+        targets.append(chunk.target.to_numpy())
+        scores.append(model.probabilities(chunk.features))
+        amounts.append(chunk.context["amount"].astype("float32").to_numpy())
+        del chunk
+        gc.collect()
+    return np.concatenate(targets), np.concatenate(scores), np.concatenate(amounts)
+
+
+def _trim(parts: list[list], budget: int, seed: int) -> list[list]:
+    """Ramène l'échantillon de test à `budget` lignes, les trois collections restant alignées.
+
+    Les positions conservées sont tirées une seule fois puis appliquées aux variables, aux
+    labels et au contexte : aucune désynchronisation possible entre les trois.
+    """
+    merged = [pd.concat(part, ignore_index=True) for part in parts]
+    if len(merged[0]) <= budget:
+        return [[m] for m in merged]
+    kept = (
+        pd.Series(range(len(merged[0]))).sample(budget, random_state=seed).sort_values().to_numpy()
+    )
+    return [[m.iloc[kept].reset_index(drop=True)] for m in merged]
+
+
+def _score_test(
     settings: Settings,
     split: ds.Split,
     model: FraudModel,
     seed: int,
-    sample_per_month: int,
+    sample_budget: int,
 ) -> tuple[ds.Dataset, ds.Dataset]:
-    """Score le jeu de test mois par mois et n'en garde que ce qui sert à l'évaluation.
+    """Score le jeu de test par lots et ne garde que ce qui sert à l'évaluation.
 
-    Retourne deux jeux : l'un complet mais sans variables (scores, labels, contexte), pour
-    les métriques et l'équité ; l'autre échantillonné avec ses variables, pour la robustesse
-    et l'explicabilité. Un mois est libéré dès qu'il est scoré : la mémoire reste constante,
-    quel que soit le nombre de mois de test.
+    Retourne deux jeux : l'un complet mais sans variables (scores, labels, contexte réduit),
+    pour les métriques, le coût, l'équité et la dérive ; l'autre borné à `sample_budget`
+    lignes avec ses variables, pour la robustesse et l'explicabilité. Chaque lot est libéré
+    dès qu'il est scoré et l'échantillon est régulièrement ramené à sa taille cible : la
+    mémoire ne dépend ni du nombre de mois évalués ni de leur volume.
     """
     contexts, targets, samples, sample_targets, sample_contexts = [], [], [], [], []
-    for period in ds.months_between(split.test):
-        month = ds.load_month(settings, period, model.feature_names, model.categories, seed)
-        if not len(month.target):
-            continue
-        context = month.context.copy()
-        context["score"] = model.probabilities(month.features)
+    per_chunk, kept, rows = max(sample_budget // 8, 1), 0, 0
+    for chunk in ds.iter_chunks(
+        settings,
+        split.test,
+        categories=model.categories,
+        feature_names=model.feature_names,
+        seed=seed,
+    ):
+        context = chunk.context[[c for c in EVAL_CONTEXT if c in chunk.context.columns]].copy()
+        context["score"] = model.probabilities(chunk.features)
         contexts.append(context)
-        targets.append(month.target)
-        keep = min(sample_per_month, len(month.target))
-        index = month.features.sample(keep, random_state=seed).index
-        samples.append(month.features.loc[index])
-        sample_targets.append(month.target.loc[index])
-        sample_contexts.append(month.context.loc[index])
-        del month
+        targets.append(chunk.target)
+        keep = min(per_chunk, len(chunk.target))
+        index = chunk.features.sample(keep, random_state=seed).index
+        samples.append(chunk.features.loc[index])
+        sample_targets.append(chunk.target.loc[index])
+        sample_contexts.append(chunk.context.loc[index])
+        kept += keep
+        if kept > 2 * sample_budget:  # l'échantillon ne grossit jamais indéfiniment
+            samples, sample_targets, sample_contexts = _trim(
+                [samples, sample_targets, sample_contexts], sample_budget, seed
+            )
+            kept = len(samples[0])
+        rows += len(chunk.target)
+        del chunk
         gc.collect()
+    samples, sample_targets, sample_contexts = _trim(
+        [samples, sample_targets, sample_contexts], sample_budget, seed
+    )
+    logger.info("Test scoré par lots : %d lignes (échantillon %d)", rows, len(samples[0]))
 
     full = ds.Dataset(
         name="test",
@@ -199,25 +265,25 @@ def train(
             version=run.info.run_id[:8],
         )
 
-        # Seuil choisi sur la validation : le test ne sert qu'à mesurer, jamais à régler.
-        valid_scores = model.probabilities(bundle.valid.features)
-        best_cost, budget = ev.choose_threshold(
-            bundle.valid.target.to_numpy(),
-            valid_scores,
-            bundle.valid.context["amount"].astype(float).to_numpy(),
-            ml.alert_budget,
-        )
-        model.threshold = float(budget.threshold)
-
         train_summary = bundle.train.summary() | bundle.valid.summary()
-        # Mémoire : le modèle est entraîné, les jeux d'entraînement ne servent plus.
-        del train_set, valid_set, valid_scores
-        bundle.train = bundle.valid = None  # les jeux d'entraînement sont libérés
+        # Mémoire : le modèle est entraîné, les jeux d'apprentissage ne servent plus.
+        del train_set, valid_set
+        bundle.train = bundle.valid = None
         gc.collect()
 
-        test, test_sample = _score_test_by_month(
-            settings, split, model, ml.seed, ml.robustness_sample
+        # Seuil choisi sur la validation complète, relue par lots : le test ne sert qu'à
+        # mesurer, jamais à régler.
+        y_valid, valid_scores, valid_amounts = _stream_valid(settings, split, model, ml.seed)
+        best_cost, budget = ev.choose_threshold(
+            y_valid, valid_scores, valid_amounts.astype(float), ml.alert_budget
         )
+        model.threshold = float(budget.threshold)
+        train_summary["valid_full_rows"] = float(len(y_valid))
+        train_summary["valid_full_frauds"] = float(y_valid.sum())
+        del y_valid, valid_scores, valid_amounts
+        gc.collect()
+
+        test, test_sample = _score_test(settings, split, model, ml.seed, ml.robustness_sample)
         test_scores = test.context["score"].to_numpy()
         y_test = test.target.to_numpy()
         amounts = test.context["amount"].astype(float).to_numpy()
