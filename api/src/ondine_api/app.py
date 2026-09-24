@@ -28,19 +28,21 @@ from dataclasses import dataclass
 
 import numpy as np
 import redis
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from ondine_ml.explain import explain_row, sentence
 from ondine_ml.model import FraudModel
 from ondine_ml.serving import load_model
 from ondine_ml.settings import MlSettings
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
-from starlette.background import BackgroundTask
+from starlette.background import BackgroundTasks
 
+from .alerts import STATUSES, AlertQueue
 from .features import compute
 from .schemas import Decision, Health, Transaction
 from .settings import ApiSettings
 from .store import OnlineStore, State
+from .ui import alert_page, queue_page
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ FEATURE_LATENCY = Histogram(
     buckets=(0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1),
 )
 OVER_BUDGET = Counter("scoring_over_budget_total", "Décisions au-delà du budget de latence")
+ALERTS_FAILED = Counter("scoring_alerts_failed_total", "Alertes non déposées dans la file")
 MODEL_READY = Gauge("scoring_model_loaded", "1 si un modèle est chargé et servi")
 # Repli si le modèle servi est antérieur à l'introduction du budget dans ses métadonnées.
 DEFAULT_ALERT_BUDGET = 0.001
@@ -76,6 +79,7 @@ class Service:
     model: FraudModel | None = None
     version: str = "inconnue"
     store: OnlineStore | None = None
+    queue: AlertQueue | None = None
     # Seuil réellement appliqué : celui du modèle au démarrage, puis recalé sur les scores
     # récents pour tenir le budget d'alertes.
     threshold: float = 0.5
@@ -86,6 +90,7 @@ class Service:
         self.store = OnlineStore.from_url(
             self.settings.redis_url, self.settings.pseudonymisation_key
         )
+        self.queue = AlertQueue(self.settings.pg_dsn) if self.settings.pg_dsn else None
         self.model, self.version = load_model(self.ml, self.settings.model_alias)
         self.threshold = self.model.threshold
         self._warm_up()
@@ -200,6 +205,44 @@ def _register_routes(application: FastAPI) -> None:
         """Métriques Prometheus : volume, latence, décisions, mode dégradé."""
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+    @application.get("/alertes", response_class=HTMLResponse, tags=["analyste"])
+    def file_alertes(request: Request, etat: str = "a_traiter") -> HTMLResponse:
+        """File de travail des analystes : les alertes à examiner, les plus risquées d'abord."""
+        queue = _queue(request)
+        if etat not in STATUSES:
+            raise HTTPException(404, "État inconnu.")
+        alertes = queue.pending(request.app.state.service.settings.alerts_page_size, etat)
+        return HTMLResponse(queue_page(alertes, queue.counts(), etat))
+
+    @application.get("/alertes/{transaction_id}", response_class=HTMLResponse, tags=["analyste"])
+    def detail_alerte(transaction_id: str, request: Request, message: str = "") -> HTMLResponse:
+        """Détail d'une alerte : ce que le modèle a vu, et la décision de l'analyste."""
+        alerte = _queue(request).get(transaction_id)
+        if alerte is None:
+            raise HTTPException(404, "Alerte inconnue.")
+        return HTMLResponse(alert_page(alerte, message))
+
+    @application.post("/alertes/{transaction_id}", tags=["analyste"])
+    def decider_alerte(
+        transaction_id: str,
+        request: Request,
+        analyste: str = Form(..., min_length=2, max_length=64),
+        etat: str = Form(...),
+        note: str = Form("", max_length=1000),
+    ) -> RedirectResponse:
+        """Enregistre la décision d'un analyste, tracée au journal d'audit.
+
+        Redirection après enregistrement : recharger la page ne rejoue pas la décision, et le
+        bouton « précédent » du navigateur reste sans surprise.
+        """
+        if etat not in ("fraude_confirmee", "ecartee"):
+            raise HTTPException(422, "Suite donnée invalide.")
+        if not _queue(request).review(transaction_id, etat, analyste, note):
+            raise HTTPException(404, "Alerte inconnue.")
+        return RedirectResponse(
+            f"/alertes/{transaction_id}?message=Décision+enregistrée.", status_code=303
+        )
+
     @application.post("/scorer", response_model=Decision, tags=["décision"])
     def scorer(transaction: Transaction, request: Request) -> Response:
         """Rend la décision pour une demande d'autorisation."""
@@ -208,6 +251,14 @@ def _register_routes(application: FastAPI) -> None:
             ERRORS.labels("modele_absent").inc()
             raise HTTPException(503, "Aucun modèle chargé : vérifier le registre MLflow.")
         return _decide(service, transaction)
+
+
+def _queue(request: Request) -> AlertQueue:
+    """File d'alertes, ou une erreur explicite si l'interface analyste n'est pas configurée."""
+    queue = request.app.state.service.queue
+    if queue is None:
+        raise HTTPException(503, "Interface analyste non configurée (ONDINE_API_PG_DSN).")
+    return queue
 
 
 def _decide(service: Service, transaction: Transaction) -> Response:
@@ -239,12 +290,11 @@ def _decide(service: Service, transaction: Transaction) -> Response:
     )
     # Écriture après la réponse : la transaction suivante de la même carte voit déjà celle-ci
     # sans que l'appelant en paie la latence. Le flux Kafka réécrira le même membre.
-    task = (
-        None
-        if degraded or state is None
-        else BackgroundTask(_remember, service, payload, probability)
-    )
-    return JSONResponse(decision.model_dump(), background=task)
+    tasks = BackgroundTasks()
+    if not degraded and state is not None:
+        tasks.add_task(_remember, service, payload, probability)
+    tasks.add_task(_record_alert, service, payload, decision)
+    return JSONResponse(decision.model_dump(), background=tasks)
 
 
 def _features(service: Service, payload: dict) -> tuple[dict, State | None, bool]:
@@ -270,6 +320,31 @@ def _features(service: Service, payload: dict) -> tuple[dict, State | None, bool
         DEGRADED.labels("magasin_indisponible").inc()
         logger.warning("Magasin en ligne indisponible, décision dégradée : %s", error)
         return compute(payload, State()), None, True
+
+
+def _record_alert(service: Service, payload: dict, decision: Decision) -> None:
+    """Dépose l'alerte dans la file des analystes (après la réponse, jamais bloquant)."""
+    if service.queue is None or decision.decision != "bloquer":
+        return
+    try:
+        service.queue.record(
+            {
+                "transaction_id": decision.transaction_id,
+                "event_time": payload["event_time"],
+                "client_id": payload["client_id"],
+                "amount": payload["amount"],
+                "channel": payload.get("channel"),
+                "merchant_country": payload.get("merchant_country"),
+                "probability": decision.probabilite_fraude,
+                "threshold": decision.seuil,
+                "model_version": decision.modele_version,
+                "explanation": decision.explication,
+                "factors": [f.model_dump() for f in decision.facteurs],
+            }
+        )
+    except Exception as error:  # noqa: BLE001 — une file indisponible ne bloque pas un paiement
+        ALERTS_FAILED.inc()
+        logger.error("Alerte non déposée pour %s : %s", decision.transaction_id, error)
 
 
 def _remember(service: Service, payload: dict, probability: float) -> None:

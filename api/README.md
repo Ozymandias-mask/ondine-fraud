@@ -91,11 +91,47 @@ métrique (`scoring_over_budget_total`) pour être suivi en production.
   administrateur ;
 - aucune donnée personnelle ne figure dans les journaux ni dans les métriques.
 
+## Interface analyste (accessible)
+
+Une décision de blocage n'a de valeur que si quelqu'un peut l'examiner, la justifier au client
+et, le cas échéant, la contredire. Chaque blocage dépose une alerte dans une file de travail
+(`ops.alerts`) avec ce qui l'a produite — probabilité, seuil appliqué, version du modèle,
+facteurs explicatifs — et l'analyste y répond : fraude confirmée, ou opération légitime. Sa
+décision est nominative, datée et tracée au journal d'audit. Ces retours mesurent aussi la
+qualité du modèle en production, bien avant que les déclarations des clients n'arrivent.
+
+**Accessibilité (RGAA)** — pages produites par le serveur, sans cadriciel ni JavaScript
+obligatoire : une interface bancaire doit rester utilisable au clavier, avec un lecteur
+d'écran, et fonctionner si un script ne se charge pas.
+
+| Exigence | Mise en œuvre |
+|---|---|
+| Langue, titre, structure | `lang="fr"`, titre unique par page, un seul `h1`, hiérarchie respectée |
+| Navigation au clavier | lien d'évitement vers le contenu, focus visible (`:focus-visible`), aucun piège au clavier |
+| Régions | `header`, `nav` nommées, `main`, `footer` |
+| Tableaux de données | `caption` et `scope="col"` sur chaque en-tête |
+| Formulaires | chaque champ associé à une étiquette **visible** |
+| Couleur | aucune information portée par la seule couleur : chaque état porte son libellé, chaque facteur sa flèche ▲/▼ |
+| Contrastes | supérieurs à 4,5:1 |
+| Mouvement | `prefers-reduced-motion` respecté |
+| Messages | confirmations annoncées (`role="status"`, `aria-live="polite"`) |
+| Zoom | mise en page fluide, lisible à 200 % |
+
+Ces points sont vérifiés par un test automatisé : ce sont ceux qui se dégradent le plus vite
+au fil des modifications. Le reste (parcours réel au lecteur d'écran, audit RGAA complet) ne
+se contrôle pas par un test et relève d'une recette dédiée.
+
+Les données affichées viennent du flux de paiement et des analystes : elles sont échappées,
+et un test vérifie qu'un balisage injecté s'affiche comme texte au lieu d'être interprété.
+
 ## Points d'entrée
 
 | Méthode | Chemin | Rôle |
 |---|---|---|
 | POST | `/scorer` | décision sur une demande d'autorisation |
+| GET | `/alertes` | file de travail des analystes |
+| GET | `/alertes/{id}` | détail d'une alerte et ses facteurs |
+| POST | `/alertes/{id}` | décision d'un analyste (tracée) |
 | GET | `/sante` | vivacité (sans dépendance externe) |
 | GET | `/pret` | mise en service : modèle chargé **et** magasin joignable |
 | GET | `/metrics` | métriques Prometheus |

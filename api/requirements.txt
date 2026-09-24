@@ -7,3 +7,5 @@ fastapi==0.141.1
 uvicorn[standard]==0.53.0
 redis==8.1.0
 pydantic==2.13.5
+# Formulaires HTML de l'interface analyste (FastAPI ne les lit pas sans).
+python-multipart==0.0.26

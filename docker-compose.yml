@@ -577,6 +577,9 @@ services:
     environment:
       <<: *pipeline-env
       ONDINE_API_REDIS_URL: redis://redis:6379/0
+      # Compte dédié à l'API, au moindre privilège : il écrit les alertes et lit la file,
+      # rien d'autre. Ni les données du lac, ni le registre des traitements.
+      ONDINE_API_PG_DSN: postgresql://api_app:${PG_API_PASSWORD}@postgres:5432/ondine
       ONDINE_API_MODEL_ALIAS: champion
       ONDINE_API_LATENCY_BUDGET_MS: "100"
       # Une banque ne refuse pas tous ses paiements parce qu'un cache est tombé : en cas
@@ -587,6 +590,7 @@ services:
       DUCKDB_MEMORY_LIMIT: 512MB
     depends_on:
       redis: {condition: service_healthy}
+      db-migrate: {condition: service_completed_successfully}
       mlflow-init: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/pret', timeout=5)"]

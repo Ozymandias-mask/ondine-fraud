@@ -39,6 +39,10 @@ class ApiSettings:
     score_window: int = 200_000
     recalibration_interval_s: float = 300.0
     recalibration_min_samples: int = 20_000
+    # Base de la file d'alertes (compte de l'API, au moindre privilège). Vide : l'interface
+    # analyste est désactivée, l'API continue de décider.
+    pg_dsn: str = field(default="", repr=False)
+    alerts_page_size: int = 50
 
     @classmethod
     def from_env(cls) -> ApiSettings:
@@ -63,4 +67,6 @@ class ApiSettings:
             recalibration_min_samples=value(
                 "ONDINE_API_RECALIBRATION_MIN", cls.recalibration_min_samples
             ),
+            pg_dsn=os.environ.get("ONDINE_API_PG_DSN", cls.pg_dsn),
+            alerts_page_size=value("ONDINE_API_ALERTS_PAGE_SIZE", cls.alerts_page_size),
         )

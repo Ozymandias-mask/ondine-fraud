@@ -300,3 +300,160 @@ def test_threshold_is_recalibrated_to_hold_the_alert_budget(client):
         service.store.record_score(float(score), service.settings.score_window)
     service.recalibrate()
     assert service.threshold == stable
+
+
+@pytest.fixture
+def analyste(client, lake):
+    """API dont l'interface analyste est branchée sur la base de test."""
+    from ondine_api.alerts import AlertQueue
+
+    http, service = client
+    service.queue = AlertQueue(lake.pg_dsn)
+    return http, service
+
+
+def test_an_alert_reaches_the_analyst_queue_and_can_be_decided(analyste):
+    """Chaîne complète : blocage → file d'alertes → décision tracée."""
+    from ondine_api.app import _record_alert
+    from ondine_api.schemas import Decision, Factor
+
+    http, service = analyste
+    decision = Decision(
+        transaction_id="TX-UI-1",
+        probabilite_fraude=0.91,
+        decision="bloquer",
+        seuil=0.24,
+        modele_version="abc12345",
+        latence_ms=3.1,
+        mode_degrade=False,
+        explication="Signalée principalement sur : ancienneté de l'appareil (0.5).",
+        facteurs=[
+            Factor(
+                variable="device_age_hours_for_client",
+                libellé="ancienneté de l'appareil pour ce client",
+                valeur=0.5,
+                effet="augmente le risque",
+                poids=1.2,
+            )
+        ],
+    )
+    _record_alert(service, transaction(transaction_id="TX-UI-1"), decision)
+
+    file_attente = http.get("/alertes")
+    assert file_attente.status_code == 200
+    assert "TX-UI-1"[:12] in file_attente.text
+
+    detail = http.get("/alertes/TX-UI-1")
+    assert detail.status_code == 200
+    # Le rendu échappe les apostrophes : c'est précisément ce qu'on attend d'une page qui
+    # affiche des données, et la vérification en tient compte.
+    assert "appareil" in detail.text and "0.5" in detail.text
+
+    envoi = http.post(
+        "/alertes/TX-UI-1",
+        data={"analyste": "a.martin", "etat": "fraude_confirmee", "note": "Client confirme"},
+        follow_redirects=True,
+    )
+    assert envoi.status_code == 200
+    assert "Fraude confirmée" in envoi.text and "a.martin" in envoi.text
+    assert http.get("/alertes/inconnue").status_code == 404
+
+
+def test_the_analyst_interface_meets_the_accessibility_rules(analyste):
+    """Vérifie les règles RGAA tenables automatiquement, sur les deux pages de l'interface.
+
+    L'accessibilité ne se contrôle pas entièrement par un test — mais ces points-là, si, et
+    ils sont ceux qui se dégradent le plus vite au fil des modifications.
+    """
+    from ondine_api.app import _record_alert
+    from ondine_api.schemas import Decision, Factor
+
+    http, service = analyste
+    _record_alert(
+        service,
+        transaction(transaction_id="TX-RGAA-1"),
+        Decision(
+            transaction_id="TX-RGAA-1",
+            probabilite_fraude=0.8,
+            decision="bloquer",
+            seuil=0.2,
+            modele_version="v1",
+            latence_ms=2.0,
+            mode_degrade=False,
+            explication="Signalée sur un montant inhabituel.",
+            facteurs=[
+                Factor(
+                    variable="amount",
+                    libellé="montant",
+                    valeur=900.0,
+                    effet="augmente le risque",
+                    poids=0.4,
+                )
+            ],
+        ),
+    )
+    for page in (http.get("/alertes").text, http.get("/alertes/TX-RGAA-1").text):
+        assert '<html lang="fr">' in page, "langue de la page déclarée"
+        assert page.count("<title>") == 1 and "Ondine Bank" in page, "titre unique et explicite"
+        assert 'class="evitement" href="#contenu"' in page, "lien d'évitement vers le contenu"
+        assert '<main id="contenu">' in page and "<header>" in page, "régions sémantiques"
+        assert page.count("<h1>") == 1, "un seul titre de niveau 1"
+        assert "aria-label" in page, "régions de navigation nommées"
+        assert ":focus-visible" in page, "focus clavier visible"
+        assert "prefers-reduced-motion" in page, "respect du mouvement réduit"
+
+    liste = http.get("/alertes").text
+    assert "<caption>" in liste and 'scope="col"' in liste, "tableau de données légendé et porté"
+
+    detail = http.get("/alertes/TX-RGAA-1").text
+    for champ in ("analyste", "etat", "note"):
+        assert f'for="{champ}"' in detail and f'id="{champ}"' in detail, f"étiquette de {champ}"
+    assert "▲" in detail or "▼" in detail, "le sens d'un facteur ne repose pas sur la couleur"
+    assert 'role="status"' not in detail, "aucun message parasite sur une page sans action"
+    apres = http.get("/alertes/TX-RGAA-1?message=Test").text
+    assert 'aria-live="polite"' in apres, "les confirmations sont annoncées aux lecteurs d'écran"
+
+
+def test_the_interface_neutralises_injected_markup(analyste):
+    """Une donnée hostile s'affiche, elle ne s'exécute pas.
+
+    Les champs affichés viennent du flux de paiement et des analystes : ils ne sont pas
+    dignes de confiance. Une interface bancaire qui interpréterait du balisage venu de là
+    offrirait une prise directe à un attaquant (injection de script).
+    """
+    from ondine_api.app import _record_alert
+    from ondine_api.schemas import Decision, Factor
+
+    http, service = analyste
+    piege = "<script>alert('xss')</script>"
+    _record_alert(
+        service,
+        transaction(transaction_id="TX-XSS-1"),
+        Decision(
+            transaction_id="TX-XSS-1",
+            probabilite_fraude=0.7,
+            decision="bloquer",
+            seuil=0.2,
+            modele_version=piege,
+            latence_ms=2.0,
+            mode_degrade=False,
+            explication=piege,
+            facteurs=[
+                Factor(
+                    variable="amount",
+                    libellé=piege,
+                    valeur=1.0,
+                    effet="augmente le risque",
+                    poids=0.1,
+                )
+            ],
+        ),
+    )
+    http.post(
+        "/alertes/TX-XSS-1",
+        data={"analyste": piege, "etat": "ecartee", "note": piege},
+        follow_redirects=True,
+    )
+    rendu = http.get("/alertes/TX-XSS-1").text
+    assert "<script>" not in rendu, "aucun balisage injecté ne doit être interprété"
+    assert "&lt;script&gt;" in rendu, "la donnée reste visible, sous forme de texte"
