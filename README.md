@@ -82,6 +82,10 @@ docker compose --profile stream up -d --build
 docker compose --profile orchestration up -d --build
 
 # 6. Modèle de fraude (entraînement ; suivi dans MLflow : http://localhost:5001)
+# L'entraînement lit 50 millions de lignes : on arrête d'abord ce dont il n'a pas besoin
+# (Kafka, Airflow, tableaux de bord), sans quoi la machine hôte peut manquer de mémoire.
+docker compose stop kafka-1 kafka-2 kafka-3 kafka-ui grafana prometheus pushgateway `
+  simulator-stream online-features scoring-api
 docker compose --profile ml run --rm --build ml-cli train
 
 # 7. API de scoring temps réel (contrat : http://localhost:8010/docs)

@@ -530,13 +530,16 @@ services:
       ONDINE_ML_TEST: "2025-10..2025-12"
       # Validation et test sont lus par lots : DuckDB n'a jamais besoin de plus, et le reste
       # de la mémoire du conteneur revient à l'entraînement.
-      DUCKDB_MEMORY_LIMIT: 3GB
+      DUCKDB_MEMORY_LIMIT: 2GB
     depends_on:
       mlflow-init: {condition: service_completed_successfully}
     deploy:
       resources:
         limits:
-          memory: 10G
+          # Plafond volontairement inférieur à la mémoire mesurée disponible : si un
+          # entraînement dérape, Docker arrête *ce* conteneur au lieu de laisser la machine
+          # hôte s'effondrer. L'échec est alors lisible (code 137) au lieu d'être une panne.
+          memory: 8G
 
   # ------------------------------------------------- API de scoring temps réel (profil api)
   # Magasin de variables en ligne : l'historique glissant (carte, client, appareil,
