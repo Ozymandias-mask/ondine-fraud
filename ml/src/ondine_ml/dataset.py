@@ -257,14 +257,18 @@ def _fetch(
 ) -> pd.DataFrame:
     """Exécute une requête et rapatrie son résultat **en entier**.
 
-    Volontairement pas de lecture en flux (`to_arrow_reader`) : elle déclenche, de façon
-    intermittente et seulement sur de gros volumes, une erreur interne de DuckDB dans la
-    gestion de son tampon. Le découpage est donc fait par nous, en requêtes complètes et
-    indépendantes (un mois, éventuellement un sous-ensemble) : chacune tient en mémoire, et
-    aucune ne dépend d'un mécanisme que nous ne maîtrisons pas.
+    Volontairement **sans passer par Arrow** : sur de gros volumes, la conversion Arrow de
+    DuckDB 1.5 échoue par intermittence avec une longueur négative (le lot demandé n'étant pas
+    un multiple de la taille interne de ses blocs, le décompte restant passe sous zéro). Le
+    contrôle d'intégrité du lac a confirmé que les données, elles, sont saines. La conversion
+    native vers pandas suit un tout autre chemin dans DuckDB et n'a pas ce défaut.
+
+    Le découpage est fait par nous, en requêtes complètes et indépendantes (un mois,
+    éventuellement un quart de mois) : chacune tient en mémoire, et aucune ne dépend d'un
+    mécanisme de lecture continue que nous ne maîtrisons pas.
     """
     query = f"SELECT {', '.join(columns)} FROM read_parquet('{pattern}') WHERE {where}"
-    return con.execute(query).fetch_arrow_table().to_pandas()
+    return con.execute(query).df()
 
 
 def _bucket(index: int, count: int) -> str:

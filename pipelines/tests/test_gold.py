@@ -115,6 +115,8 @@ def test_lake_integrity_check_names_a_truncated_file(gold, base_settings, tmp_pa
     sain = summary(check_layer(settings, "gold"))
     assert sain["fichiers"] > 0 and sain["fichiers_illisibles"] == 0 and sain["lignes"] > 0
 
+    # Coupure en plein milieu : les métadonnées de fin disparaissent, comme après un arrêt
+    # brutal. Un contrôle qui se contenterait de compter les lignes n'y verrait rien.
     cible = sorted(copie.glob("gold/transaction_features/**/*.parquet"))[0]
     contenu = cible.read_bytes()
     cible.write_bytes(contenu[: len(contenu) // 2])

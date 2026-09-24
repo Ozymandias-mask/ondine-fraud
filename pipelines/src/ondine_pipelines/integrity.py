@@ -5,9 +5,10 @@ Parquet tronqué. Il reste alors présent, de taille plausible, et n'échoue qu'
 le relit vraiment — souvent bien plus tard, dans un traitement qui n'a rien à voir. C'est le
 pire mode de panne d'un data lake : silencieux à l'écriture, bruyant au plus mauvais moment.
 
-Ce contrôle relit **tout** le contenu de chaque fichier (pas seulement ses métadonnées, qui
-restent souvent valides sur un fichier tronqué) et nomme celui qui pose problème, avec le
-mois à recalculer. Il s'exécute sans rien modifier.
+Ce contrôle décode **toutes les colonnes de toutes les lignes** de chaque fichier — et non ses
+seules métadonnées, qui restent valides sur un fichier tronqué — puis nomme celui qui pose
+problème, avec le mois à recalculer. Il s'exécute sans rien modifier, et son coût est celui
+d'une lecture complète du lac : c'est le prix d'une réponse fiable.
 """
 
 from __future__ import annotations
@@ -48,10 +49,12 @@ def check_layer(settings: Settings, layer: str) -> list[FileReport]:
         ]
         for uri in files:
             try:
-                # Somme d'une colonne plutôt que `count(*)` : ce dernier peut se contenter des
-                # métadonnées du fichier, qui survivent à une troncature. Ici tout est décodé.
+                # `hash(COLUMNS(*))` force la lecture de **toutes** les colonnes, ligne par
+                # ligne. Un simple `count(*)`, même dans une sous-requête, est ramené par
+                # l'optimiseur à une lecture des métadonnées — lesquelles survivent
+                # précisément aux troncatures que ce contrôle doit détecter.
                 rows = con.execute(
-                    "SELECT count(*) FROM (SELECT * FROM read_parquet(?))", [uri]
+                    "SELECT count(*) FROM (SELECT hash(COLUMNS(*)) FROM read_parquet(?))", [uri]
                 ).fetchone()[0]
                 reports.append(FileReport(uri, int(rows), None))
             except Exception as error:  # noqa: BLE001 — on veut le motif, quel qu'il soit
