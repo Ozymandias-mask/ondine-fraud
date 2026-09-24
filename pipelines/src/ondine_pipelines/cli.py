@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 
@@ -114,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("security-scan", help="Détecter les accès anormaux dans le journal d'audit")
     retention = sub.add_parser("retention", help="Purger la zone d'arrivée déjà ingérée")
     retention.add_argument("--days", type=int, default=7)
+    verify = sub.add_parser("verify", help="Relire tout le lac et signaler les fichiers abîmés")
+    verify.add_argument("--layer", default="gold", help="bronze, silver, gold, quarantine…")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -136,6 +139,12 @@ def main(argv: list[str] | None = None) -> int:
             if failures:
                 logging.getLogger(__name__).error("Tâches en échec : %s", ", ".join(failures))
                 return 1
+        elif args.command == "verify":
+            from .integrity import check_layer, summary
+
+            report = summary(check_layer(settings, args.layer))
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            return 1 if report["fichiers_illisibles"] else 0
         elif args.command == "rights":
             from .governance.monitoring import push_governance_metrics
             from .governance.rights import process_requests

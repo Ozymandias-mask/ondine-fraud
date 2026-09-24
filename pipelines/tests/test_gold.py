@@ -94,3 +94,32 @@ def test_history_flag_marks_warm_up_period(gold):
         features["event_time"] < features["event_time"].min() + pd.Timedelta(days=5),
         "history_complete",
     ].any()
+
+
+def test_lake_integrity_check_names_a_truncated_file(gold, base_settings, tmp_path):
+    """Un Parquet coupé en deux est détecté et désigné, avec le motif de l'erreur.
+
+    C'est le mode de panne d'un arrêt brutal : le fichier reste présent et de taille
+    plausible, mais n'échoue qu'à la relecture — parfois des heures plus tard, dans un
+    traitement sans rapport. Le contrôle le nomme avant que cela n'arrive.
+    """
+    import shutil
+    from dataclasses import replace
+
+    from ondine_pipelines.integrity import check_layer, summary
+
+    copie = tmp_path / "lake"
+    shutil.copytree(base_settings.lake_root, copie)
+    settings = replace(base_settings, lake_root=str(copie))
+
+    sain = summary(check_layer(settings, "gold"))
+    assert sain["fichiers"] > 0 and sain["fichiers_illisibles"] == 0 and sain["lignes"] > 0
+
+    cible = sorted(copie.glob("gold/transaction_features/**/*.parquet"))[0]
+    contenu = cible.read_bytes()
+    cible.write_bytes(contenu[: len(contenu) // 2])
+
+    abime = summary(check_layer(settings, "gold"))
+    assert abime["fichiers_illisibles"] == 1
+    assert abime["a_recalculer"][0]["fichier"].endswith(cible.name)
+    assert abime["a_recalculer"][0]["motif"]

@@ -178,6 +178,18 @@ docker compose --profile pipelines run --rm pipelines-cli retention --days 7
 
 `--no-resume` force le recalcul complet de `silver`, `gold` ou `kpis`.
 
+## Contrôle d'intégrité du lac
+
+```powershell
+docker compose --profile pipelines run --rm pipelines-cli verify --layer gold
+```
+
+Relit **intégralement** chaque fichier Parquet de la couche (et non ses seules métadonnées,
+qui survivent à une troncature) et nomme ceux qui sont illisibles. Un arrêt brutal — coupure,
+machine à bout de mémoire, conteneur tué — laisse un fichier de taille plausible qui n'échoue
+qu'à la relecture, souvent bien plus tard et dans un traitement sans rapport. Le contrôle
+ramène la panne à sa cause et indique le mois à recalculer.
+
 ## Tests
 
 ```powershell
