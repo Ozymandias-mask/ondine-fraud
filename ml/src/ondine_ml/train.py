@@ -20,6 +20,7 @@ import gc
 import json
 import logging
 import platform
+import re
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -182,6 +183,7 @@ def train(
     bundle = ds.load(settings, split, ml.negative_sampling_rate, ml.seed, parts=("train", "valid"))
     train_params = {**DEFAULT_PARAMS, **(params or {}), "seed": ml.seed, "deterministic": True}
 
+    fairness_decision = pd.DataFrame()
     with mlflow.start_run(run_name=f"lightgbm-{time.strftime('%Y%m%d-%H%M%S')}") as run:
         model = _fit(bundle, train_params, ml, run.info.run_id[:8])
 
@@ -235,13 +237,22 @@ def train(
         train_summary["valid_full_frauds"] = float(y_valid.sum())
         train_summary["fairness_reweighted_groups"] = float(len(weights))
         if valid_recalls:
-            # Mesure en validation conservée telle quelle : c'est elle qui a décidé (ou non)
-            # de la correction, elle doit rester consultable et opposable.
+            # Le détail par région va dans un rapport, pas dans les noms de métriques : ceux-ci
+            # n'acceptent ni accent ni apostrophe, et « Provence-Alpes-Côte d'Azur » en a.
             train_summary["valid_fairness_region_recall_ratio"] = min(valid_recalls.values()) / max(
                 valid_recalls.values()
             )
-            for groupe, rappel in valid_recalls.items():
-                train_summary[f"valid_recall_{groupe}"] = rappel
+            fairness_decision = pd.DataFrame(
+                [
+                    {
+                        "région": groupe,
+                        "rappel_validation": rappel,
+                        "poids_appliqué": weights.get(groupe, 1.0),
+                    }
+                    for groupe, rappel in sorted(valid_recalls.items())
+                ]
+            )
+
         # Mémoire : le modèle est entraîné, les jeux d'apprentissage ne servent plus.
         bundle.train = bundle.valid = None
         del y_valid, valid_scores, valid_amounts
@@ -305,7 +316,15 @@ def train(
                 **{f"data_{k}": v for k, v in bundle.fingerprint.items()},
             }
         )
-        mlflow.log_metrics({k: float(v) for k, v in metrics.items() if np.isfinite(float(v))})
+        # Les noms de métriques n'acceptent qu'un alphabet restreint : on le garantit ici
+        # plutôt que de faire échouer un entraînement de deux minutes sur un nom de région.
+        mlflow.log_metrics(
+            {
+                re.sub(r"[^A-Za-z0-9_.:/ -]", "_", k): float(v)
+                for k, v in metrics.items()
+                if np.isfinite(float(v))
+            }
+        )
         mlflow.set_tags(
             {
                 "solution": "ondine-fraude",
@@ -321,6 +340,7 @@ def train(
                 {
                     "courbe_precision_rappel.png": _pr_curve_figure(y_test, test_scores, metrics),
                     "equite_par_groupe.csv": fairness,
+                    "equite_decision_validation.csv": fairness_decision,
                     "robustesse.csv": robustness,
                     "performance_mensuelle.csv": monthly,
                     "importance_variables.csv": importance,
