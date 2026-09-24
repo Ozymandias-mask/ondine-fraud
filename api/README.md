@@ -43,6 +43,21 @@ Le prétraitement de l'API est un chemin rapide (conversion directe en tableau d
 pandas) ; un test vérifie qu'il donne **exactement** la même prédiction que le chemin utilisé
 à l'entraînement.
 
+## Le seuil se recale tout seul
+
+Le budget d'alertes est une contrainte d'organisation — une transaction sur mille — donc un
+**quantile**, pas une probabilité figée. Sur ces données, 4 % d'écart de seuil change le
+volume d'alertes d'un facteur cent : un seuil gravé à l'entraînement ne tiendrait pas la
+promesse faite à l'équipe fraude.
+
+L'API conserve donc, dans le magasin en ligne, une fenêtre glissante des scores rendus
+(200 000 par défaut) et recalcule le seuil toutes les cinq minutes comme le quantile
+correspondant au budget. Le seuil du modèle sert de repli au démarrage, avant que la fenêtre
+ne soit assez remplie ; en deçà de 20 000 observations, rien n'est recalé — un quantile
+extrême sur peu de données ne veut rien dire. Toutes les instances de l'API partagent la même
+fenêtre : elles convergent sans avoir à se coordonner, et le seuil appliqué est exporté
+(`scoring_model_threshold`, `scoring_threshold_recalibrations_total`).
+
 ## Latence mesurée
 
 | Étape | Médiane |

@@ -34,6 +34,11 @@ class ApiSettings:
     # on trace, plutôt que de bloquer les paiements d'une banque entière.
     fail_open: bool = True
     explain_top_factors: int = 4
+    # Recalage du seuil sur les scores récents : le budget d'alertes est une contrainte
+    # d'organisation (un quantile), pas une probabilité figée.
+    score_window: int = 200_000
+    recalibration_interval_s: float = 300.0
+    recalibration_min_samples: int = 20_000
 
     @classmethod
     def from_env(cls) -> ApiSettings:
@@ -51,4 +56,11 @@ class ApiSettings:
             latency_budget_ms=value("ONDINE_API_LATENCY_BUDGET_MS", cls.latency_budget_ms),
             fail_open=os.environ.get("ONDINE_API_FAIL_OPEN", "true").lower() == "true",
             explain_top_factors=value("ONDINE_API_EXPLAIN_FACTORS", cls.explain_top_factors),
+            score_window=value("ONDINE_API_SCORE_WINDOW", cls.score_window),
+            recalibration_interval_s=value(
+                "ONDINE_API_RECALIBRATION_S", cls.recalibration_interval_s
+            ),
+            recalibration_min_samples=value(
+                "ONDINE_API_RECALIBRATION_MIN", cls.recalibration_min_samples
+            ),
         )

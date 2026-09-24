@@ -16,11 +16,33 @@ l'autorisation d'un paiement, s'il doit être bloqué ou signalé.
 | Sortie | probabilité de fraude, décision, facteurs explicatifs | l'analyste voit pourquoi, le client peut être informé |
 | Découpage | 8 mois d'entraînement, 1 de validation, 3 de test | on entraîne sur le passé et on mesure sur le futur, comme en production |
 | Déséquilibre | toutes les fraudes, 5 % des transactions légitimes (entraînement **et** validation) | entraînement rapide ; les probabilités sont ensuite corrigées pour revenir au taux réel |
-| Seuil | le meilleur coût métier **dans** le budget d'alertes (0,1 % des transactions) | l'équipe fraude ne peut pas traiter plus |
+| Point de fonctionnement | budget d'alertes : 0,1 % des transactions examinées | c'est ce que l'équipe fraude peut traiter |
 
-Le jeu de **test n'est jamais échantillonné** : ce sont ses chiffres qui sont annoncés. Le
-seuil, qui dépend du taux d'alertes réel, est calculé sur le mois de validation complet,
-relu par lots après l'entraînement.
+Le jeu de **test n'est jamais échantillonné** : ce sont ses chiffres qui sont annoncés.
+
+### Le seuil est un quantile, pas une probabilité
+
+Le budget d'alertes est une contrainte d'organisation : « l'équipe examine une transaction
+sur mille ». C'est donc un **quantile** de la population décidée. Le traduire une fois pour
+toutes en probabilité fixe ne tient pas : sur ces données, la densité des scores est si
+concentrée autour du point de coupure que **4 % d'écart sur le seuil change le volume
+d'alertes d'un facteur cent** (127 alertes au lieu de 13 945 sur trois mois).
+
+Conséquences, vérifiées par les mesures :
+
+| | Seuil figé (0,2485) | Budget d'alertes (0,2391) |
+|---|---|---|
+| Alertes sur 13,9 M de transactions | 127 | 13 945 |
+| Fraudes détectées | 0,4 % | **51,5 %** |
+| Précision | 89 % | 91 % |
+| Coût métier | 17,6 M€ | **7,9 M€** |
+
+*(moteur de règles actuel : 18,1 M€, avec 231 404 alertes et 18 % de détection)*
+
+L'entraînement annonce donc ses chiffres **au point de fonctionnement**, celui que la
+production applique réellement ; le seuil figé est conservé comme point de comparaison
+(`fixed_*`) et comme repli au démarrage de l'API. Celle-ci recale le seuil en continu sur les
+scores des dernières transactions (voir `api/`).
 
 **Tenue à l'échelle** : 50 millions de transactions ne tiennent pas en mémoire. Les jeux
 d'apprentissage sont sous-échantillonnés puis libérés dès le modèle entraîné ; la validation

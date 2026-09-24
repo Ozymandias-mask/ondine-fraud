@@ -26,6 +26,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+import numpy as np
 import redis
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -58,7 +59,12 @@ FEATURE_LATENCY = Histogram(
 )
 OVER_BUDGET = Counter("scoring_over_budget_total", "Décisions au-delà du budget de latence")
 MODEL_READY = Gauge("scoring_model_loaded", "1 si un modèle est chargé et servi")
-MODEL_THRESHOLD = Gauge("scoring_model_threshold", "Seuil de décision du modèle servi")
+# Repli si le modèle servi est antérieur à l'introduction du budget dans ses métadonnées.
+DEFAULT_ALERT_BUDGET = 0.001
+MODEL_THRESHOLD = Gauge("scoring_model_threshold", "Seuil de décision effectivement appliqué")
+RECALIBRATIONS = Counter(
+    "scoring_threshold_recalibrations_total", "Recalages du seuil sur les scores récents"
+)
 
 
 @dataclass
@@ -70,6 +76,10 @@ class Service:
     model: FraudModel | None = None
     version: str = "inconnue"
     store: OnlineStore | None = None
+    # Seuil réellement appliqué : celui du modèle au démarrage, puis recalé sur les scores
+    # récents pour tenir le budget d'alertes.
+    threshold: float = 0.5
+    recalibrated_at: float = 0.0
 
     def load(self) -> None:
         """Charge le modèle promu et ouvre le magasin. Échouer ici évite de servir à vide."""
@@ -77,9 +87,46 @@ class Service:
             self.settings.redis_url, self.settings.pseudonymisation_key
         )
         self.model, self.version = load_model(self.ml, self.settings.model_alias)
+        self.threshold = self.model.threshold
         self._warm_up()
         MODEL_READY.set(1)
         MODEL_THRESHOLD.set(self.model.threshold)
+
+    def recalibrate(self) -> None:
+        """Recale le seuil sur la distribution récente des scores, pour tenir le budget.
+
+        Le budget d'alertes est une contrainte d'organisation : l'équipe fraude examine une
+        transaction sur mille. Un seuil figé en probabilité ne tient pas cette promesse — sur
+        ces données, 4 % d'écart de seuil change le volume d'alertes d'un facteur cent. On
+        applique donc le budget comme ce qu'il est : un quantile de la population décidée.
+
+        Chaque instance de l'API recale depuis la **même** fenêtre partagée : elles
+        convergent vers le même seuil sans avoir à se coordonner.
+        """
+        settings = self.settings
+        now = time.monotonic()
+        if self.store is None or now - self.recalibrated_at < settings.recalibration_interval_s:
+            return
+        self.recalibrated_at = now
+        try:
+            scores = self.store.recent_scores(settings.score_window)
+        except redis.RedisError as error:
+            logger.warning("Seuil non recalé (magasin injoignable) : %s", error)
+            return
+        if len(scores) < settings.recalibration_min_samples:
+            return  # trop peu d'observations : un quantile extrême n'y voudrait rien dire
+        budget = self.model.alert_budget if self.model else DEFAULT_ALERT_BUDGET
+        recalibrated = float(np.quantile(scores, 1 - budget))
+        if recalibrated != self.threshold:
+            logger.info(
+                "Seuil recalé sur %d transactions : %.6f (était %.6f)",
+                len(scores),
+                recalibrated,
+                self.threshold,
+            )
+        self.threshold = recalibrated
+        MODEL_THRESHOLD.set(recalibrated)
+        RECALIBRATIONS.inc()
 
     def _warm_up(self) -> None:
         """Première prédiction à vide, au démarrage.
@@ -130,7 +177,7 @@ def _register_routes(application: FastAPI) -> None:
             statut="en vie",
             modele=service.ml.model_name if service.model else None,
             modele_version=service.version if service.model else None,
-            seuil=service.model.threshold if service.model else None,
+            seuil=service.threshold if service.model else None,
         )
 
     @application.get("/pret", response_model=Health, tags=["exploitation"])
@@ -144,7 +191,7 @@ def _register_routes(application: FastAPI) -> None:
             statut="prêt" if ready else "indisponible",
             modele=service.ml.model_name if service.model else None,
             modele_version=service.version if service.model else None,
-            seuil=service.model.threshold if service.model else None,
+            seuil=service.threshold if service.model else None,
             magasin_en_ligne=online,
         )
 
@@ -171,7 +218,7 @@ def _decide(service: Service, transaction: Transaction) -> Response:
     # Un seul prétraitement pour la probabilité *et* l'explication.
     matrix = service.model.row_matrix(features)
     probability = float(service.model.probabilities(matrix)[0])
-    alert = probability >= service.model.threshold
+    alert = probability >= service.threshold
     factors = explain_row(service.model, matrix, features, top=service.settings.explain_top_factors)
     elapsed = time.perf_counter() - started
 
@@ -183,7 +230,7 @@ def _decide(service: Service, transaction: Transaction) -> Response:
         transaction_id=transaction.transaction_id,
         probabilite_fraude=probability,
         decision="bloquer" if alert else "autoriser",
-        seuil=service.model.threshold,
+        seuil=service.threshold,
         modele_version=service.version,
         latence_ms=round(elapsed * 1000, 3),
         mode_degrade=degraded,
@@ -192,7 +239,11 @@ def _decide(service: Service, transaction: Transaction) -> Response:
     )
     # Écriture après la réponse : la transaction suivante de la même carte voit déjà celle-ci
     # sans que l'appelant en paie la latence. Le flux Kafka réécrira le même membre.
-    task = None if degraded or state is None else BackgroundTask(_remember, service, payload)
+    task = (
+        None
+        if degraded or state is None
+        else BackgroundTask(_remember, service, payload, probability)
+    )
     return JSONResponse(decision.model_dump(), background=task)
 
 
@@ -221,10 +272,12 @@ def _features(service: Service, payload: dict) -> tuple[dict, State | None, bool
         return compute(payload, State()), None, True
 
 
-def _remember(service: Service, payload: dict) -> None:
-    """Écrit la transaction dans le magasin (après la réponse), sans faire échouer l'appel."""
+def _remember(service: Service, payload: dict, probability: float) -> None:
+    """Après la réponse : mémorise la transaction, le score, et recale le seuil si besoin."""
     try:
         service.store.record_transaction(payload)
+        service.store.record_score(probability, service.settings.score_window)
+        service.recalibrate()
     except redis.RedisError as error:  # l'écriture est rattrapée par le flux Kafka
         DEGRADED.labels("ecriture_differee").inc()
         logger.warning("Transaction non écrite dans le magasin en ligne : %s", error)

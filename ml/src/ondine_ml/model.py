@@ -29,6 +29,10 @@ class FraudModel(mlflow.pyfunc.PythonModel):
     categories: dict[str, list[str]] = field(default_factory=dict)
     negative_sampling_rate: float = 1.0
     threshold: float = 0.5
+    # Part des transactions que l'équipe fraude peut examiner. C'est **elle** qui définit le
+    # point de fonctionnement ; le seuil n'en est que la traduction sur une population donnée,
+    # et l'API le recale en continu sur les scores récents.
+    alert_budget: float = 0.001
     version: str = "dev"
     # Cache interne : codes des catégories, construits au premier scoring unitaire.
     _codes: dict[str, dict[str, int]] | None = field(default=None, repr=False, compare=False)
@@ -142,6 +146,7 @@ def metadata(model: FraudModel) -> dict[str, object]:
         "version": model.version,
         "threshold": model.threshold,
         "negative_sampling_rate": model.negative_sampling_rate,
+        "alert_budget": model.alert_budget,
         "features": model.feature_names,
         "categorical": model.categorical,
         "trees": model.booster.num_trees() if model.booster else 0,

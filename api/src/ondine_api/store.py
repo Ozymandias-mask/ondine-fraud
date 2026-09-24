@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 
 SEPARATOR = "\t"  # absent des identifiants métier
 
+# Fenêtre glissante des scores rendus, partagée par toutes les instances de l'API : c'est
+# elle qui permet de tenir le budget d'alertes quelle que soit la dérive des scores.
+SCORES_KEY = "of:scores"
+
 # Types d'événements retenus dans la chronologie du client : exactement ceux qu'utilise la
 # couche gold (`EVENT_TYPES_USED`). Les autres n'entrent pas dans le magasin — ils ne servent
 # à aucune variable et compteraient à tort comme « activité » dans les fenêtres.
@@ -308,6 +312,19 @@ class OnlineStore:
                 0,
             )
         return state
+
+    # ----------------------------------------------- distribution récente des scores
+    def record_score(self, score: float, window: int) -> None:
+        """Ajoute un score à la fenêtre glissante qui sert à recaler le seuil de décision."""
+        pipe = self.redis.pipeline(transaction=False)
+        pipe.lpush(SCORES_KEY, repr(float(score)))
+        pipe.ltrim(SCORES_KEY, 0, window - 1)
+        pipe.expire(SCORES_KEY, 7 * DAY)
+        pipe.execute()
+
+    def recent_scores(self, window: int) -> list[float]:
+        """Scores des dernières transactions décidées, tous instances d'API confondues."""
+        return [float(v) for v in self.redis.lrange(SCORES_KEY, 0, window - 1)]
 
     def ping(self) -> bool:
         """Disponibilité du magasin (sonde de mise en service)."""

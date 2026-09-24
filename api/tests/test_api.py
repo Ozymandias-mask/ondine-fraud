@@ -258,3 +258,45 @@ def test_fast_path_gives_exactly_the_same_score_as_the_training_path(client):
         rapide = model.probabilities(model.row_matrix(features))[0]
         reference = model.probabilities(pd.DataFrame([features]))[0]
         assert rapide == pytest.approx(reference, rel=1e-12)
+
+
+def test_threshold_is_recalibrated_to_hold_the_alert_budget(client):
+    """Le seuil se recale sur les scores récents : c'est le budget d'alertes qui commande.
+
+    Un seuil figé en probabilité ne tient pas la promesse faite à l'équipe fraude — sur les
+    données réelles du projet, 4 % d'écart de seuil change le volume d'alertes d'un facteur
+    cent. Le budget est donc appliqué comme ce qu'il est : un quantile de la population
+    décidée, recalculé à intervalle régulier sur une fenêtre partagée par toutes les
+    instances de l'API.
+    """
+    import numpy as np
+    from ondine_api.settings import ApiSettings
+
+    _, service = client
+    service.settings = ApiSettings(
+        redis_url="redis://inutilisé",
+        pseudonymisation_key="clé-de-test",
+        recalibration_interval_s=0.0,
+        recalibration_min_samples=1000,
+        score_window=50_000,
+    )
+    service.model.alert_budget = 0.01
+    depart = service.threshold
+
+    # Une population de scores connue : le quantile à 99 % vaut 0,99.
+    scores = np.linspace(0.0, 1.0, 5000)
+    for score in scores:
+        service.store.record_score(float(score), service.settings.score_window)
+
+    service.recalibrate()
+    assert service.threshold != depart
+    assert service.threshold == pytest.approx(0.99, abs=0.01)
+
+    # Trop peu d'observations : on ne bouge pas un seuil sur un quantile qui ne veut rien dire.
+    service.store.redis.delete("of:scores")
+    service.recalibrated_at = 0.0
+    stable = service.threshold
+    for score in np.linspace(0.0, 1.0, 100):
+        service.store.record_score(float(score), service.settings.score_window)
+    service.recalibrate()
+    assert service.threshold == stable

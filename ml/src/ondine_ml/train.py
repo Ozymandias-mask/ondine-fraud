@@ -165,8 +165,8 @@ def train(
         bundle.train = bundle.valid = None
         gc.collect()
 
-        # Seuil choisi sur la validation complète, relue par lots : le test ne sert qu'à
-        # mesurer, jamais à régler.
+        # Seuil de repli, calé sur la validation complète relue par lots : il sert au
+        # démarrage de l'API, avant qu'elle n'ait vu assez de transactions pour se recaler.
         y_valid, valid_scores, valid_amounts = sc.stream_scores(
             settings, split.valid, model, ml.seed
         )
@@ -174,6 +174,7 @@ def train(
             y_valid, valid_scores, valid_amounts.astype(float), ml.alert_budget
         )
         model.threshold = float(budget.threshold)
+        model.alert_budget = ml.alert_budget
         train_summary["valid_full_rows"] = float(len(y_valid))
         train_summary["valid_full_frauds"] = float(y_valid.sum())
         del y_valid, valid_scores, valid_amounts
@@ -185,22 +186,35 @@ def train(
         test_scores = test.context["score"].to_numpy()
         y_test = test.target.to_numpy()
         amounts = test.context["amount"].astype(float).to_numpy()
+
+        # Point de fonctionnement : le budget d'alertes est une contrainte d'organisation
+        # (« l'équipe peut examiner une transaction sur mille »), donc un **quantile** de la
+        # population décidée, pas une probabilité figée. Ici, 4 % d'écart sur le seuil change
+        # le volume d'alertes d'un facteur cent : un seuil absolu serait ingérable. C'est ce
+        # que l'API recale en continu sur les scores récents ; les chiffres annoncés sont donc
+        # mesurés au même point, et non à un seuil qu'aucune production ne conserverait.
+        operating = ev.budget_threshold(test_scores, ml.alert_budget)
         metrics = {
             **ev.quality_metrics(y_test, test_scores),
-            **ev.threshold_metrics(y_test, test_scores, amounts, model.threshold),
+            **ev.threshold_metrics(y_test, test_scores, amounts, operating),
             **ev.legacy_rules_metrics(test),
         }
-        # Le seuil est calé sur la validation ; on mesure ce que le même budget d'alertes
-        # imposerait sur la période de test, plus récente. L'écart est une dérive.
+        # Pour comparaison : ce que donnerait le seuil de repli, jamais recalé.
         metrics.update(
-            ev.threshold_drift(y_test, test_scores, amounts, model.threshold, ml.alert_budget)
+            {
+                f"fixed_{k}": v
+                for k, v in ev.threshold_metrics(
+                    y_test, test_scores, amounts, model.threshold
+                ).items()
+            }
         )
-        fairness = ev.fairness_report(test, test_scores, model.threshold)
+        metrics["threshold_drift_ratio"] = (
+            model.threshold / operating if operating else float("inf")
+        )
+        fairness = ev.fairness_report(test, test_scores, operating)
         metrics.update(ev.fairness_gaps(fairness))
-        robustness = ev.robustness_report(
-            test_sample, model.probabilities, model.threshold, ml.seed
-        )
-        monthly = ev.monthly_report(test, test_scores, model.threshold)
+        robustness = ev.robustness_report(test_sample, model.probabilities, operating, ml.seed)
+        monthly = ev.monthly_report(test, test_scores, operating)
         importance = global_importance(model, test_sample, sample=ml.shap_sample, seed=ml.seed)
         metrics["cost_saving_vs_legacy_eur"] = (
             metrics["legacy_cost_total_eur"] - metrics["cost_total_eur"]
@@ -303,8 +317,9 @@ def training_summary(result: TrainingResult) -> dict[str, object]:
         "cost_saving_vs_legacy_eur",
         # Dérive du seuil : sans ces trois chiffres, un volume d'alertes effondré ressemble
         # à un mauvais modèle alors que c'est le seuil qui a vieilli.
-        "budget_threshold",
-        "budget_recall",
+        "threshold",
+        "fixed_alert_rate",
+        "fixed_recall",
         "threshold_drift_ratio",
     )
     summary = asdict(result)

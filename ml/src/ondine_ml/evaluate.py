@@ -118,23 +118,6 @@ def budget_threshold(scores: np.ndarray, budget: float = ALERT_BUDGET) -> float:
     return float(np.quantile(scores, 1 - budget))
 
 
-def threshold_drift(
-    y_true: np.ndarray, scores: np.ndarray, amounts: np.ndarray, threshold: float, budget: float
-) -> dict[str, float]:
-    """Compare le seuil en service au seuil que le budget d'alertes imposerait aujourd'hui."""
-    recalibrated = budget_threshold(scores, budget)
-    flagged = scores >= recalibrated
-    detected = float(((y_true == 1) & flagged).sum())
-    return {
-        "budget_threshold": recalibrated,
-        "budget_recall": detected / max(float(y_true.sum()), 1),
-        "budget_precision": detected / max(float(flagged.sum()), 1),
-        "budget_cost_total_eur": business_cost(y_true, flagged, amounts)["cost_total_eur"],
-        # > 1 : le seuil en service est trop haut, le volume d'alertes s'effondre.
-        "threshold_drift_ratio": threshold / recalibrated if recalibrated else float("inf"),
-    }
-
-
 def quality_metrics(y_true: np.ndarray, scores: np.ndarray) -> dict[str, float]:
     """Métriques indépendantes du seuil."""
     return {
