@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -117,10 +118,11 @@ def _unpack(rows: list[tuple[str, float]]) -> list[tuple[float, list[str]]]:
 class OnlineStore:
     """Lecture et écriture de l'historique glissant utilisé par l'API de scoring."""
 
-    def __init__(self, client: redis.Redis, pseudonymisation_key: str) -> None:
+    def __init__(self, client: redis.Redis, pseudonymisation_key: str, url: str = "") -> None:
         """Magasin adossé à un client Redis déjà ouvert (le même en test et en production)."""
         self.redis = client
         self._key = pseudonymisation_key
+        self.url = url  # conservée pour ouvrir au besoin une connexion aux délais plus longs
 
     @classmethod
     def from_url(cls, url: str, pseudonymisation_key: str) -> OnlineStore:
@@ -132,7 +134,7 @@ class OnlineStore:
             socket_connect_timeout=2.0,
             health_check_interval=30,
         )
-        return cls(client, pseudonymisation_key)
+        return cls(client, pseudonymisation_key, url)
 
     # ------------------------------------------------------------------ pseudonymisation
     def pseudo(self, value: str | None) -> str | None:
@@ -325,6 +327,35 @@ class OnlineStore:
     def recent_scores(self, window: int) -> list[float]:
         """Scores des dernières transactions décidées, tous instances d'API confondues."""
         return [float(v) for v in self.redis.lrange(SCORES_KEY, 0, window - 1)]
+
+    def wait_ready(self, timeout: float = 180.0) -> bool:
+        """Attend que le magasin réponde, en le sondant régulièrement.
+
+        Au redémarrage, Redis recharge son fichier de persistance — plusieurs gigaoctets ici —
+        et ne répond à aucune commande pendant ce temps. Un client réglé pour du temps réel
+        abandonne bien avant. Les traitements hors ligne (rejeu, chargement du référentiel)
+        attendent donc explicitement, au lieu d'échouer sur un délai dépassé.
+        """
+        limite = time.monotonic() + timeout
+        while time.monotonic() < limite:
+            try:
+                if self.redis.ping():
+                    return True
+            except redis.RedisError:
+                pass  # « chargement en cours » et coupures passagères : on réessaie
+            logger.info("Magasin en ligne pas encore prêt, nouvelle tentative…")
+            time.sleep(3)
+        return False
+
+    def flush(self) -> None:
+        """Vide le magasin (démonstration seulement), sans bloquer sur la libération."""
+        # Connexion dédiée, aux délais longs : celle de l'API est réglée pour le temps réel.
+        client = (
+            redis.Redis.from_url(self.url, socket_timeout=300, socket_connect_timeout=30)
+            if self.url
+            else self.redis
+        )
+        client.flushdb(asynchronous=True)
 
     def ping(self) -> bool:
         """Disponibilité du magasin (sonde de mise en service)."""

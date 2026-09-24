@@ -87,13 +87,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.flush or not args.no_warmup:
             api = ApiSettings.from_env()
             magasin = OnlineStore.from_url(api.redis_url, api.pseudonymisation_key)
+            if not magasin.wait_ready():
+                logger.error("Magasin en ligne toujours injoignable : rejeu abandonné.")
+                return 1
             if args.flush:
                 # Uniquement pour rendre une démonstration reproductible : en production le
                 # magasin n'est jamais vidé, il se renouvelle par ses durées de vie.
                 # Suppression asynchrone : vider plusieurs gigaoctets bloquerait Redis bien
                 # au-delà du délai d'attente d'un client réglé pour du temps réel.
                 logger.warning("Magasin en ligne vidé avant le rejeu.")
-                magasin.redis.flushdb(asynchronous=True)
+                magasin.flush()
                 time.sleep(2)  # laisse la libération démarrer avant d'écrire à nouveau
             if not args.no_warmup:
                 warm_store(pipelines, magasin, transactions)
