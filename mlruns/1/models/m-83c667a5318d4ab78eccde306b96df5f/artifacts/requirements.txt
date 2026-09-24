@@ -1,0 +1,4 @@
+mlflow==3.16.1
+lightgbm==4.7.0
+pandas
+scikit-learn

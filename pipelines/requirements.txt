@@ -4,3 +4,12 @@ duckdb==1.5.5
 psycopg[binary]==3.3.5
 pytz==2026.1
 confluent-kafka==2.15.1
+
+# Modèle de fraude (paquet ml/). « mlflow-skinny » est le client seul : le serveur MLflow
+# a sa propre image, et les dépendances lourdes du serveur n'entrent pas ici.
+lightgbm==4.7.0
+scikit-learn==1.8.0
+shap==0.51.0
+matplotlib==3.10.7
+pandas==3.0.6
+mlflow-skinny==3.16.1

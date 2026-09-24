@@ -18,7 +18,8 @@ ignore = [
 # Requêtes DuckDB construites à partir de constantes internes et de littéraux échappés
 # (lake.sql_literal) : aucune donnée utilisateur n'est concaténée dans le SQL.
 "pipelines/src/**" = ["S608"]
+"ml/src/**" = ["S608"]
 
 [tool.pytest.ini_options]
-testpaths = ["simulator/tests", "pipelines/tests"]
+testpaths = ["simulator/tests", "pipelines/tests", "ml/tests"]
 addopts = "-q"

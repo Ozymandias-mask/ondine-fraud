@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ondine-ml"
+version = "1.0.0"
+description = "Modèle de détection de fraude d'Ondine Bank : entraînement, évaluation, explicabilité"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ondine-pipelines",
+    "lightgbm>=4.6",
+    "scikit-learn>=1.5",
+    "shap>=0.48",
+    "mlflow>=3.4",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+]
+
+[project.scripts]
+ondine-ml = "ondine_ml.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

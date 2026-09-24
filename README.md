@@ -13,7 +13,7 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 |---|---|---|
 | 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait, validé sur le PC** |
 | 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : bronze, silver, gold et flux validés ; orchestration et gouvernance livrées |
-| 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | à venir |
+| 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | **en cours** : entraînement, suivi MLflow et explicabilité livrés |
 | 4. Plans écrits | Gouvernance, infrastructure, pipeline | à venir |
 
 ## Architecture actuelle
@@ -44,6 +44,7 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | `stream-ingest` | Kafka → bronze (profil stream) | réseau interne, métriques :8001 | 2 répliques en groupe, commit après écriture |
 | `pipelines-cli` | traitements batch (profil pipelines) | – | voir `pipelines/README.md` |
 | `airflow-*` | orchestration (profil orchestration) | http://localhost:8081 | comptes nominatifs (admin, consultation), relances automatiques |
+| `mlflow` | suivi des expériences et registre des modèles | http://localhost:5001 | authentification, compte de service distinct, seul détenteur d'une clé S3 pour les artefacts |
 
 Tous les ports sont liés à `127.0.0.1` : rien n'est exposé sur le réseau local.
 
@@ -76,6 +77,9 @@ docker compose --profile stream up -d --build
 
 # 5. Orchestration : ingestion, silver, gold, indicateurs, RGPD et sécurité automatiques
 docker compose --profile orchestration up -d --build
+
+# 6. Modèle de fraude (entraînement ; suivi dans MLflow : http://localhost:5001)
+docker compose --profile ml run --rm --build ml-cli train
 ```
 
 ### Mettre à jour le dépôt à partir d'un bundle livré
@@ -102,6 +106,7 @@ Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafan
 │   └── grafana/                source de données et tableau de bord provisionnés
 ├── simulator/                  générateur de données (voir simulator/README.md)
 ├── pipelines/                  traitements du data lake (voir pipelines/README.md)
+├── ml/                         modèle de fraude (voir ml/README.md)
 └── data/                       données générées (hors Git)
 ```
 

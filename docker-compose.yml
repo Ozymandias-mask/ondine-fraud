@@ -49,10 +49,13 @@ x-airflow-env: &airflow-env
   DUCKDB_THREADS: "4"
   DUCKDB_MEMORY_LIMIT: 4GB
   LANDING_RETENTION_DAYS: "7"
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  MLFLOW_TRACKING_USERNAME: ${MLFLOW_SERVICE_USER}
+  MLFLOW_TRACKING_PASSWORD: ${MLFLOW_SERVICE_PASSWORD}
 
 x-airflow-common: &airflow-common
   image: ondine/pipelines:local
-  build: ./pipelines
+  build: {context: ., dockerfile: pipelines/Dockerfile}
   profiles: [orchestration]
   restart: unless-stopped
   logging: *default-logging
@@ -385,7 +388,7 @@ services:
 
   # ---------------------------------------------------------------- Pipelines (ligne de commande, profil à la demande)
   pipelines-cli:
-    build: ./pipelines
+    build: {context: ., dockerfile: pipelines/Dockerfile}
     image: ondine/pipelines:local
     profiles: [pipelines]
     restart: "no"
@@ -404,6 +407,9 @@ services:
       PUSHGATEWAY_URL: pushgateway:9091
       DUCKDB_THREADS: "4"
       DUCKDB_MEMORY_LIMIT: 6GB
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_SERVICE_USER}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_SERVICE_PASSWORD}
     depends_on:
       db-migrate: {condition: service_completed_successfully}
       seaweed-init: {condition: service_completed_successfully}
@@ -416,7 +422,7 @@ services:
   # 2 répliques dans le même groupe de consommateurs : les partitions sont réparties entre
   # elles ; si l'une s'arrête, l'autre reprend ses partitions au dernier offset validé.
   stream-ingest:
-    build: ./pipelines
+    build: {context: ., dockerfile: pipelines/Dockerfile}
     image: ondine/pipelines:local
     profiles: [stream]
     restart: unless-stopped
@@ -449,6 +455,83 @@ services:
       resources:
         limits:
           memory: 1G
+
+  # ---------------------------------------------------------------- Suivi des modèles (MLflow)
+  # Expériences, métriques, artefacts et registre des modèles. Les artefacts transitent par le
+  # serveur (--serve-artifacts) : lui seul détient une clé S3.
+  mlflow:
+    build: ./infra/mlflow
+    image: ondine/mlflow:local
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["127.0.0.1:5001:5000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      seaweed-init: {condition: service_completed_successfully}
+    environment:
+      PG_MLFLOW_PASSWORD: ${PG_MLFLOW_PASSWORD}
+      MLFLOW_ADMIN_USER: ${MLFLOW_ADMIN_USER}
+      MLFLOW_ADMIN_PASSWORD: ${MLFLOW_ADMIN_PASSWORD}
+      MLFLOW_FLASK_SERVER_SECRET_KEY: ${MLFLOW_FLASK_SECRET_KEY}
+      AWS_ACCESS_KEY_ID: ${S3_ML_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_ML_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
+      MLFLOW_S3_ENDPOINT_URL: http://seaweed-filer:8333
+    entrypoint: ["/bin/sh", "/start.sh"]
+    volumes:
+      - ./infra/mlflow/start.sh:/start.sh:ro
+      - mlflow-auth:/home/mlflow/auth
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # Compte de service des traitements : les DAG et la ligne de commande n'utilisent pas
+  # l'administrateur (réservé aux personnes, via l'interface web).
+  mlflow-init:
+    image: ondine/mlflow:local
+    restart: "no"
+    networks: [ondine]
+    depends_on:
+      mlflow: {condition: service_healthy}
+    environment:
+      MLFLOW_URL: http://mlflow:5000
+      MLFLOW_ADMIN_USER: ${MLFLOW_ADMIN_USER}
+      MLFLOW_ADMIN_PASSWORD: ${MLFLOW_ADMIN_PASSWORD}
+      MLFLOW_SERVICE_USER: ${MLFLOW_SERVICE_USER}
+      MLFLOW_SERVICE_PASSWORD: ${MLFLOW_SERVICE_PASSWORD}
+    entrypoint: ["python", "/create_service_user.py"]
+    volumes: ["./infra/mlflow/create_service_user.py:/create_service_user.py:ro"]
+
+  # ---------------------------------------------------------------- Modèle (ligne de commande, profil à la demande)
+  ml-cli:
+    build: {context: ., dockerfile: pipelines/Dockerfile}
+    image: ondine/pipelines:local
+    profiles: [ml]
+    restart: "no"
+    networks: [ondine]
+    entrypoint: ["ondine-ml"]
+    command: ["train"]
+    environment:
+      <<: *pipeline-env
+      # Découpage temporel par défaut : 8 mois d'entraînement, 1 de validation, 3 de test.
+      ONDINE_ML_TRAIN: "2025-01..2025-08"
+      ONDINE_ML_VALID: "2025-09..2025-09"
+      ONDINE_ML_TEST: "2025-10..2025-12"
+      DUCKDB_MEMORY_LIMIT: 6GB
+    depends_on:
+      mlflow-init: {condition: service_completed_successfully}
+    deploy:
+      resources:
+        limits:
+          memory: 14G
 
   # ---------------------------------------------------------------- Orchestration Airflow (profil orchestration)
   # Planification et reprise automatiques de tous les traitements batch (DAG dans pipelines/dags).
@@ -568,6 +651,7 @@ networks:
     name: ondine
 
 volumes:
+  mlflow-auth:
   kafka-1-data:
   kafka-2-data:
   kafka-3-data:
