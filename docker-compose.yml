@@ -486,12 +486,13 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=5)"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 40s
+      retries: 6
+      start_period: 90s
     deploy:
       resources:
         limits:
-          memory: 1G
+          # 2 processus de service : ~600 Mo chacun au chargement de MLflow.
+          memory: 2G
 
   # Compte de service des traitements : les DAG et la ligne de commande n'utilisent pas
   # l'administrateur (réservé aux personnes, via l'interface web).
