@@ -146,6 +146,18 @@ docker compose --profile api run --rm scoring-api referentials
 curl http://localhost:8010/pret
 ```
 
+### Remplir la file avec de vraies transactions
+
+```powershell
+docker compose --profile api run --rm scoring-api replay --month 2025-12 --limit 5000
+```
+
+Rejoue de **vraies** transactions du data lake par le chemin exact de la production —
+requête HTTP, magasin en ligne, variables, modèle, décision, dépôt de l'alerte — et rapporte
+débit, taux de blocage et latences observées (médiane, 95e, 99e centile, maximum). C'est à la
+fois la démonstration de mise en production et la mesure du budget de 100 ms sur des données
+réelles.
+
 Réglages : `ONDINE_API_REDIS_URL`, `ONDINE_API_MODEL_ALIAS` (par défaut `champion`),
 `ONDINE_API_LATENCY_BUDGET_MS`, `ONDINE_API_FAIL_OPEN`, `ONDINE_API_EXPLAIN_FACTORS`.
 

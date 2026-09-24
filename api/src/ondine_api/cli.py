@@ -48,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--workers", type=int, default=int(os.environ.get("API_WORKERS", "2")))
     commands.add_parser("feed", help="alimente le magasin en ligne depuis Kafka")
     commands.add_parser("referentials", help="charge le référentiel marchands dans le magasin")
+    rejeu = commands.add_parser(
+        "replay", help="rejoue de vraies transactions à travers l'API (démonstration, mesure)"
+    )
+    rejeu.add_argument("--month", required=True, help="mois à rejouer, au format AAAA-MM")
+    rejeu.add_argument("--limit", type=int, default=5000, help="nombre de transactions")
+    rejeu.add_argument("--url", default="http://scoring-api:8000", help="adresse de l'API")
     args = parser.parse_args(argv)
 
     if args.commande == "serve":
@@ -62,6 +68,14 @@ def main(argv: list[str] | None = None) -> int:
             access_log=False,  # le journal d'accès est remplacé par les métriques Prometheus
         )
         return 0
+    if args.commande == "replay":
+        from .replay import read_transactions, replay
+
+        transactions = read_transactions(Settings.from_env(), args.month, args.limit)
+        logger.info("%d transactions lues, envoi à %s", len(transactions), args.url)
+        report = replay(args.url, transactions)
+        print(json.dumps(report.summary(), indent=2, ensure_ascii=False))
+        return 0 if report.sent else 1
     if args.commande == "feed":
         from .stream import main as feed
 
