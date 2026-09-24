@@ -112,6 +112,23 @@ nommant les motifs, si l'un d'eux n'est pas tenu.
 Un refus est journalisé **et** inscrit sur la version dans MLflow (`promotion_refusee`). Le
 modèle sortant garde l'alias `ancien_champion` : le retour arrière est immédiat.
 
+### Dérogation assumée
+
+Un critère peut être écarté sciemment — un écart d'équité de deux millièmes face à dix
+millions d'euros de fraude évitée, par exemple. Cette décision appartient à la banque ; ce qui
+ne se négocie pas, c'est qu'elle soit visible :
+
+```powershell
+docker compose --profile ml run --rm ml-cli promote `
+  --derogation "écart de 0,001 sur la règle des 4/5, gain de 10 M€, correction en cours" `
+  --responsable "Direction des risques" --reexamen-jours 90
+```
+
+La dérogation est inscrite dans `governance.model_exceptions` — critère non tenu, motif,
+responsable, échéance de réexamen — étiquetée sur la version du modèle dans MLflow, et tracée
+au journal d'audit. La vue `governance.model_exceptions_due` signale celles dont l'échéance
+est dépassée. Sans `--responsable`, la commande refuse : une décision s'assume.
+
 Identifiants MLflow dans `.env` : `MLFLOW_ADMIN_USER` pour l'interface web, compte de service
 `MLFLOW_SERVICE_USER` pour les traitements (aucun des deux ne détient de clé S3 : le serveur
 relaie les artefacts).

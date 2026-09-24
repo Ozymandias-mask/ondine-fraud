@@ -202,7 +202,20 @@ def test_every_command_of_the_cli_runs(trained, ml_settings, lake, monkeypatch):
     assert main(["metrics", "--alias", "challenger"]) == 0
     assert main(["report", "--alias", "challenger", "--name", "equite"]) == 0
     assert main(["explain", "--alias", "challenger", "--rank", "1"]) == 0
-    assert main(["promote", "--alias", "challenger", "--force"]) == 0
+    assert (
+        main(
+            [
+                "promote",
+                "--alias",
+                "challenger",
+                "--derogation",
+                "écart d'équité de deux millièmes face à 10 M€ de fraude évitée",
+                "--responsable",
+                "Direction des risques",
+            ]
+        )
+        == 0
+    )
     assert main(["rollback"]) in (0, 2)
 
 
@@ -248,3 +261,29 @@ def test_training_retrains_with_weights_when_the_gap_requires_it(lake, ml_settin
     assert result.metrics["fairness_reweighted_groups"] > 0
     assert "valid_fairness_region_recall_ratio" in result.metrics
     assert result.metrics["auc_pr"] > 0.5, "la correction ne doit pas casser le modèle"
+
+
+def test_a_derogation_is_recorded_in_the_governance_register(trained, ml_settings, lake):
+    """Mettre en service malgré un critère non tenu laisse une trace nominative et datée."""
+    import psycopg
+    from ondine_ml.promote import Derogation, record_exception
+
+    record_exception(
+        lake.pg_dsn,
+        ml_settings.model_name,
+        "42",
+        ["équité insuffisante : fairness_region_recall_ratio 0.799 < 0.8 (règle des 4/5)"],
+        Derogation("10 M€ de fraude évitée pour un écart de deux millièmes", "Dir. risques", 60),
+    )
+    with psycopg.connect(lake.pg_dsn) as connection:
+        ligne = connection.execute(
+            "SELECT criterion, justification, approved_by, status, is_overdue"
+            " FROM governance.model_exceptions_due WHERE model_version = '42'"
+        ).fetchone()
+        tracee = connection.execute(
+            "SELECT count(*) FROM audit.access_log WHERE action = 'model_promotion_derogation'"
+        ).fetchone()[0]
+    assert ligne is not None, "la dérogation doit figurer au registre"
+    assert "4/5" in ligne[0] and ligne[2] == "Dir. risques" and ligne[3] == "ouverte"
+    assert ligne[4] is False, "l'échéance de réexamen court encore"
+    assert tracee >= 1, "la décision doit aussi apparaître au journal d'audit"

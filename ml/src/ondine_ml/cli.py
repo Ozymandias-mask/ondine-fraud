@@ -37,7 +37,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     promote_cmd.add_argument("--alias", default="challenger", help="Alias du candidat")
     promote_cmd.add_argument(
-        "--force", action="store_true", help="Promouvoir sans vérifier les critères (exceptionnel)"
+        "--derogation",
+        help="Motif d'une mise en service malgré un critère non tenu (inscrite au registre)",
+    )
+    promote_cmd.add_argument("--responsable", help="Personne qui engage sa responsabilité")
+    promote_cmd.add_argument(
+        "--reexamen-jours", type=int, default=90, help="Échéance de réexamen de la dérogation"
     )
     sub.add_parser("rollback", help="Remet en service le champion précédent")
     metrics_cmd = sub.add_parser("metrics", help="Affiche toutes les métriques d'un modèle")
@@ -79,13 +84,17 @@ def main(argv: list[str] | None = None) -> int:
 
             print(json.dumps(report_of(ml, args.alias, args.name), indent=2, ensure_ascii=False))
         elif args.command in ("promote", "rollback"):
-            from .promote import promote, rollback
+            from .promote import Derogation, promote, rollback
 
-            decision = (
-                rollback(ml)
-                if args.command == "rollback"
-                else promote(ml, args.alias, force=args.force)
-            )
+            if args.command == "rollback":
+                decision = rollback(ml)
+            else:
+                derogation = None
+                if args.derogation:
+                    if not args.responsable:
+                        parser.error("--derogation exige --responsable : une décision s'assume.")
+                    derogation = Derogation(args.derogation, args.responsable, args.reexamen_jours)
+                decision = promote(ml, args.alias, derogation, settings.pg_dsn)
             print(json.dumps(decision.as_dict(), indent=2, ensure_ascii=False))
             return 0 if decision.promoted else 2
         elif args.command == "explain":

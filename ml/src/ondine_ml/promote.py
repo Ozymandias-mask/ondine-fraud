@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import mlflow
+import psycopg
+from psycopg.types.json import Jsonb
 
 from .settings import MlSettings
 
@@ -28,6 +30,15 @@ logger = logging.getLogger(__name__)
 
 CANDIDATE_ALIAS = "challenger"
 SERVING_ALIAS = "champion"
+
+
+@dataclass(frozen=True)
+class Derogation:
+    """Décision assumée de mettre en service malgré un critère non tenu."""
+
+    justification: str
+    approved_by: str
+    review_days: int = 90
 
 
 @dataclass
@@ -148,10 +159,56 @@ def report_of(ml: MlSettings, alias: str = CANDIDATE_ALIAS, name: str = "") -> d
     return {"alias": alias, "version": version.version, "rapports": rapports}
 
 
+def record_exception(
+    dsn: str, model: str, version: str, criteria: list[str], derogation: Derogation
+) -> int:
+    """Inscrit une dérogation au registre de gouvernance. Retourne le nombre de lignes créées.
+
+    Mettre en service un modèle qui ne tient pas un critère est une décision qu'une banque
+    peut légitimement prendre — un écart d'équité de quelques millièmes face à plusieurs
+    millions d'euros de fraude évitée, par exemple. Ce qui ne serait pas légitime, c'est que
+    cette décision soit invisible : elle est donc nommée, motivée, attribuée à une personne et
+    assortie d'une échéance de réexamen.
+    """
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        for criterion in criteria:
+            connection.execute(
+                """
+                INSERT INTO governance.model_exceptions
+                    (model_name, model_version, criterion, justification, approved_by,
+                     review_due_at)
+                VALUES (%s, %s, %s, %s, %s, now() + make_interval(days => %s))
+                """,
+                (
+                    model,
+                    version,
+                    criterion,
+                    derogation.justification,
+                    derogation.approved_by,
+                    derogation.review_days,
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO audit.access_log (actor, action, resource, purpose, details)
+            VALUES (%s, 'model_promotion_derogation', %s, 'PRC-002', %s)
+            """,
+            (derogation.approved_by, f"{model}:{version}", Jsonb({"criteres": criteria})),
+        )
+    return len(criteria)
+
+
 def promote(
-    ml: MlSettings, candidate_alias: str = CANDIDATE_ALIAS, force: bool = False
+    ml: MlSettings,
+    candidate_alias: str = CANDIDATE_ALIAS,
+    derogation: Derogation | None = None,
+    dsn: str = "",
 ) -> Decision:
-    """Promeut le candidat s'il passe les critères. Ne fait rien, et dit pourquoi, sinon."""
+    """Promeut le candidat s'il passe les critères. Ne fait rien, et dit pourquoi, sinon.
+
+    Une dérogation explicite permet de passer outre : elle est alors inscrite au registre de
+    gouvernance, avec son motif, son responsable et son échéance de réexamen.
+    """
     mlflow.set_tracking_uri(ml.tracking_uri)
     client = mlflow.MlflowClient(ml.tracking_uri)
     candidate = _version(client, ml.model_name, candidate_alias)
@@ -162,8 +219,23 @@ def promote(
         return Decision(True, candidate.version, champion.version, ["déjà en service"], {})
 
     candidate_metrics, champion_metrics = _metrics(client, candidate), _metrics(client, champion)
-    reasons = [] if force else check(candidate_metrics, champion_metrics, ml)
-    if reasons:
+    reasons = check(candidate_metrics, champion_metrics, ml)
+    if reasons and derogation is not None:
+        if dsn:
+            record_exception(dsn, ml.model_name, candidate.version, reasons, derogation)
+        client.set_model_version_tag(
+            ml.model_name, candidate.version, "derogation", derogation.justification[:480]
+        )
+        client.set_model_version_tag(
+            ml.model_name, candidate.version, "derogation_responsable", derogation.approved_by
+        )
+        logger.warning(
+            "Mise en service sous dérogation de %s : %s",
+            derogation.approved_by,
+            " ; ".join(reasons),
+        )
+        reasons = []
+    elif reasons:
         # La décision de refus est tracée sur la version : elle reste consultable dans MLflow.
         client.set_model_version_tag(
             ml.model_name, candidate.version, "promotion_refusee", " ; ".join(reasons)[:480]
