@@ -118,6 +118,44 @@ def budget_threshold(scores: np.ndarray, budget: float = ALERT_BUDGET) -> float:
     return float(np.quantile(scores, 1 - budget))
 
 
+def group_recall(
+    groups: pd.Series, y_true: np.ndarray, scores: np.ndarray, threshold: float, min_frauds: int
+) -> dict[str, float]:
+    """Rappel par groupe, en écartant ceux dont l'effectif ne permet pas de conclure."""
+    flagged = scores >= threshold
+    recalls: dict[str, float] = {}
+    for value in sorted(v for v in groups.dropna().unique()):
+        positives = (y_true == 1) & (groups == value).to_numpy()
+        if positives.sum() >= min_frauds:
+            recalls[str(value)] = float((flagged & positives).sum() / positives.sum())
+    return recalls
+
+
+def rebalancing_weights(
+    recalls: dict[str, float], target_ratio: float, maximum: float = 3.0
+) -> dict[str, float]:
+    """Poids d'entraînement corrigeant un écart de rappel entre groupes.
+
+    Principe : un groupe moins bien détecté que les autres pèse davantage à l'entraînement,
+    proportionnellement à son retard. C'est une repondération classique (*reweighing*), la
+    plus simple des corrections d'équité — et la seule qui n'utilise **jamais** l'attribut
+    sensible au moment de décider : la région n'est pas une variable d'entrée du modèle, elle
+    ne sert qu'à doser l'attention portée à chaque exemple pendant l'apprentissage.
+
+    Retourne un dictionnaire vide si l'écart est déjà tenu : on ne touche pas à un modèle qui
+    respecte déjà la règle.
+    """
+    if not recalls:
+        return {}
+    best = max(recalls.values())
+    worst = min(recalls.values())
+    if not best or worst / best >= target_ratio:
+        return {}
+    weights = {g: min(best / r, maximum) if r else maximum for g, r in recalls.items()}
+    moyenne = sum(weights.values()) / len(weights)
+    return {g: w / moyenne for g, w in weights.items()}  # moyenne ramenée à 1
+
+
 def quality_metrics(y_true: np.ndarray, scores: np.ndarray) -> dict[str, float]:
     """Métriques indépendantes du seuil."""
     return {

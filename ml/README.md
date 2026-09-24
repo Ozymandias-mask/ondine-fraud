@@ -62,7 +62,13 @@ Ces attributs servent uniquement à mesurer d'éventuels écarts de traitement.
 - **Coût métier** : montant fraudé non détecté + coût des blocages à tort, comparé au moteur
   de règles actuel — l'écart est l'économie attendue.
 - **Équité** : rappel et taux de fausses alertes par tranche d'âge et par région, avec les
-  rapports entre groupes (règle des 4/5).
+  rapports entre groupes (règle des 4/5). Si l'écart de rappel entre régions dépasse la règle
+  sur la validation, l'entraînement **se corrige tout seul** : il repart avec des exemples
+  pondérés, les régions les moins bien détectées pesant davantage (*reweighing*). La région
+  n'est jamais une variable d'entrée du modèle — elle ne sert qu'à doser l'attention portée à
+  chaque exemple pendant l'apprentissage, jamais à décider. Les groupes comptant moins de 200
+  fraudes sont écartés des comparaisons comme de la correction : un rappel calculé sur une
+  poignée de cas ne veut rien dire.
 - **Robustesse** : 10 % puis 50 % de variables manquantes, montants bruités, catégorie
   inconnue — le modèle doit se dégrader progressivement, jamais s'effondrer.
 - **Dérive** : performance mois par mois sur le jeu de test, et surtout **dérive du seuil** :

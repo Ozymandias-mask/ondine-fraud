@@ -32,20 +32,28 @@ EVAL_CONTEXT = ("event_date", "amount", "legacy_auth_status", "age_band", "regio
 
 
 def stream_scores(
-    settings: Settings, bounds: tuple[str, str], model: FraudModel, seed: int = 42
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Score un intervalle complet et ne retourne que (labels, probabilités, montants).
+    settings: Settings,
+    bounds: tuple[str, str],
+    model: FraudModel,
+    seed: int = 42,
+    context_column: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, pd.Series | None]:
+    """Score un intervalle complet et ne retourne que labels, probabilités, montants.
 
     Sert au choix du seuil de décision : celui-ci doit respecter un budget d'alertes exprimé
     en pourcentage des transactions **réelles**, donc sans sous-échantillonnage. Trois
-    vecteurs suffisent, la mémoire reste négligeable.
+    vecteurs suffisent, la mémoire reste négligeable. `context_column` ajoute une colonne de
+    contexte (l'attribut d'équité, par exemple) quand l'appelant en a besoin.
     """
-    targets, scores, amounts = [], [], []
+    targets, scores, amounts, context = [], [], [], []
     for chunk in _chunks(settings, bounds, model, seed):
         targets.append(chunk.target.to_numpy())
         scores.append(model.probabilities(chunk.features))
         amounts.append(chunk.context["amount"].astype("float32").to_numpy())
-    return np.concatenate(targets), np.concatenate(scores), np.concatenate(amounts)
+        if context_column and context_column in chunk.context.columns:
+            context.append(chunk.context[context_column].astype("object"))
+    groups = pd.concat(context, ignore_index=True) if context else None
+    return np.concatenate(targets), np.concatenate(scores), np.concatenate(amounts), groups
 
 
 def score_range(

@@ -204,3 +204,28 @@ def test_every_command_of_the_cli_runs(trained, ml_settings, lake, monkeypatch):
     assert main(["explain", "--alias", "challenger", "--rank", "1"]) == 0
     assert main(["promote", "--alias", "challenger", "--force"]) == 0
     assert main(["rollback"]) in (0, 2)
+
+
+def test_fairness_reweighting_only_corrects_a_real_gap():
+    """La correction d'équité se déclenche sur un écart réel, et laisse le reste tranquille."""
+    import numpy as np
+    import pandas as pd
+    from ondine_ml.evaluate import group_recall, rebalancing_weights
+
+    groupes = pd.Series(["A"] * 100 + ["B"] * 100 + ["C"] * 5)
+    labels = np.ones(205)
+    # A détecté à 90 %, B à 50 %, C trop petit pour conclure.
+    scores = np.concatenate(
+        [np.r_[np.ones(90), np.zeros(10)], np.r_[np.ones(50), np.zeros(50)], np.ones(5)]
+    )
+
+    recalls = group_recall(groupes, labels, scores, threshold=0.5, min_frauds=50)
+    assert set(recalls) == {"A", "B"}, "un groupe trop petit ne doit pas entrer dans la comparaison"
+    assert recalls["A"] == pytest.approx(0.9) and recalls["B"] == pytest.approx(0.5)
+
+    poids = rebalancing_weights(recalls, target_ratio=0.8)
+    assert poids["B"] > poids["A"], "le groupe le moins bien détecté doit peser davantage"
+    assert sum(poids.values()) / len(poids) == pytest.approx(1.0), "moyenne des poids ramenée à 1"
+
+    # Écart déjà tenu : on ne touche pas à un modèle qui respecte la règle.
+    assert rebalancing_weights({"A": 0.90, "B": 0.85}, target_ratio=0.8) == {}

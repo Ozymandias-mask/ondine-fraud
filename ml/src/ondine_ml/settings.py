@@ -30,6 +30,9 @@ class MlSettings:
     # Écarts tolérés avant de refuser une promotion automatique du modèle.
     min_auc_pr: float = 0.5
     min_fairness_ratio: float = 0.8
+    # En deçà, un rappel par groupe ne veut rien dire : le groupe est écarté des comparaisons
+    # comme de la correction.
+    min_group_frauds: int = 200
 
     @classmethod
     def from_env(cls) -> MlSettings:
@@ -55,6 +58,7 @@ class MlSettings:
             test_bounds=os.environ.get("ONDINE_ML_TEST", cls.test_bounds),
             min_auc_pr=value("ONDINE_ML_MIN_AUC_PR", cls.min_auc_pr),
             min_fairness_ratio=value("ONDINE_ML_MIN_FAIRNESS_RATIO", cls.min_fairness_ratio),
+            min_group_frauds=value("ONDINE_ML_MIN_GROUP_FRAUDS", cls.min_group_frauds),
         )
 
     def split(self) -> Split:

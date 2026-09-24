@@ -47,6 +47,10 @@ logger = logging.getLogger(__name__)
 
 MODEL_ARTIFACT = "model"
 
+# Attribut d'équité sur lequel porte la correction automatique (mesuré, jamais utilisé
+# comme variable d'entrée du modèle).
+FAIRNESS_ATTRIBUTE = "region"
+
 # Paramètres volontairement sobres : un modèle plus petit se réentraîne vite, s'explique
 # mieux et sur-apprend moins sur un phénomène aussi rare que la fraude.
 DEFAULT_PARAMS: dict[str, object] = {
@@ -111,6 +115,55 @@ def _save_artifacts(directory: Path, artifacts: dict[str, object]) -> None:
             target.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _fit(
+    bundle: ds.DatasetBundle,
+    params: dict[str, object],
+    ml: MlSettings,
+    version: str,
+    weights: dict[str, float] | None = None,
+) -> FraudModel:
+    """Entraîne un LightGBM et l'emballe avec son prétraitement et ses catégories.
+
+    `weights` pondère les exemples par groupe d'équité : un même entraînement, une seule
+    définition, que la pondération soit active ou non.
+    """
+    sample_weight = None
+    if weights:
+        groups = bundle.train.context[FAIRNESS_ATTRIBUTE].astype("object")
+        sample_weight = groups.map(weights).fillna(1.0).to_numpy(dtype="float64")
+    train_set = lgb.Dataset(
+        bundle.train.features,
+        label=bundle.train.target,
+        weight=sample_weight,
+        categorical_feature=bundle.categorical,
+    )
+    valid_set = lgb.Dataset(bundle.valid.features, label=bundle.valid.target, reference=train_set)
+    booster = lgb.train(
+        params,
+        train_set,
+        num_boost_round=ml.num_boost_round,
+        valid_sets=[valid_set],
+        valid_names=["valid"],
+        callbacks=[
+            lgb.early_stopping(ml.early_stopping_rounds, verbose=False),
+            lgb.log_evaluation(period=100),
+        ],
+    )
+    model = FraudModel(
+        booster=booster,
+        feature_names=bundle.feature_names,
+        categorical=bundle.categorical,
+        categories={
+            c: [str(v) for v in bundle.train.features[c].cat.categories] for c in bundle.categorical
+        },
+        negative_sampling_rate=bundle.train.negative_sampling_rate,
+        version=version,
+    )
+    del train_set, valid_set
+    gc.collect()
+    return model
+
+
 def train(
     settings: Settings,
     ml: MlSettings | None = None,
@@ -130,53 +183,51 @@ def train(
     train_params = {**DEFAULT_PARAMS, **(params or {}), "seed": ml.seed, "deterministic": True}
 
     with mlflow.start_run(run_name=f"lightgbm-{time.strftime('%Y%m%d-%H%M%S')}") as run:
-        train_set = lgb.Dataset(
-            bundle.train.features, label=bundle.train.target, categorical_feature=bundle.categorical
-        )
-        valid_set = lgb.Dataset(
-            bundle.valid.features, label=bundle.valid.target, reference=train_set
-        )
-        booster = lgb.train(
-            train_params,
-            train_set,
-            num_boost_round=ml.num_boost_round,
-            valid_sets=[valid_set],
-            valid_names=["valid"],
-            callbacks=[
-                lgb.early_stopping(ml.early_stopping_rounds, verbose=False),
-                lgb.log_evaluation(period=100),
-            ],
-        )
-        model = FraudModel(
-            booster=booster,
-            feature_names=bundle.feature_names,
-            categorical=bundle.categorical,
-            categories={
-                c: [str(v) for v in bundle.train.features[c].cat.categories]
-                for c in bundle.categorical
-            },
-            negative_sampling_rate=bundle.train.negative_sampling_rate,
-            version=run.info.run_id[:8],
-        )
+        model = _fit(bundle, train_params, ml, run.info.run_id[:8])
 
-        train_summary = bundle.train.summary() | bundle.valid.summary()
-        # Mémoire : le modèle est entraîné, les jeux d'apprentissage ne servent plus.
-        del train_set, valid_set
-        bundle.train = bundle.valid = None
-        gc.collect()
-
-        # Seuil de repli, calé sur la validation complète relue par lots : il sert au
-        # démarrage de l'API, avant qu'elle n'ait vu assez de transactions pour se recaler.
-        y_valid, valid_scores, valid_amounts = sc.stream_scores(
-            settings, split.valid, model, ml.seed
+        # Équité : le rappel ne doit pas dépendre d'où vit la victime. On le mesure sur la
+        # validation et, si l'écart entre régions dépasse la règle des 4/5, on **réentraîne**
+        # en pondérant les exemples des régions moins bien détectées. La région n'entre jamais
+        # dans les variables du modèle : elle ne sert qu'à doser l'attention à l'apprentissage.
+        y_valid, valid_scores, valid_amounts, regions = sc.stream_scores(
+            settings, split.valid, model, ml.seed, context_column=FAIRNESS_ATTRIBUTE
         )
+        weights = {}
+        if regions is not None:
+            recalls = ev.group_recall(
+                regions,
+                y_valid,
+                valid_scores,
+                ev.budget_threshold(valid_scores, ml.alert_budget),
+                min_frauds=ml.min_group_frauds,
+            )
+            weights = ev.rebalancing_weights(recalls, ml.min_fairness_ratio)
+        if weights:
+            logger.info(
+                "Écart de rappel entre régions : réentraînement pondéré (%s)",
+                ", ".join(f"{g} ×{w:.2f}" for g, w in sorted(weights.items())),
+            )
+            model = _fit(bundle, train_params, ml, run.info.run_id[:8], weights)
+            del y_valid, valid_scores, valid_amounts, regions
+            gc.collect()
+            y_valid, valid_scores, valid_amounts, _ = sc.stream_scores(
+                settings, split.valid, model, ml.seed
+            )
+
+        # Seuil de repli, calé sur la validation complète : il sert au démarrage de l'API,
+        # avant qu'elle n'ait vu assez de transactions pour se recaler elle-même.
         best_cost, budget = ev.choose_threshold(
             y_valid, valid_scores, valid_amounts.astype(float), ml.alert_budget
         )
         model.threshold = float(budget.threshold)
         model.alert_budget = ml.alert_budget
+
+        train_summary = bundle.train.summary() | bundle.valid.summary()
         train_summary["valid_full_rows"] = float(len(y_valid))
         train_summary["valid_full_frauds"] = float(y_valid.sum())
+        train_summary["fairness_reweighted_groups"] = float(len(weights))
+        # Mémoire : le modèle est entraîné, les jeux d'apprentissage ne servent plus.
+        bundle.train = bundle.valid = None
         del y_valid, valid_scores, valid_amounts
         gc.collect()
 
@@ -219,6 +270,7 @@ def train(
         metrics["cost_saving_vs_legacy_eur"] = (
             metrics["legacy_cost_total_eur"] - metrics["cost_total_eur"]
         )
+        metrics["fairness_reweighted_groups"] = float(len(weights))
         metrics["robustness_worst_recall"] = float(robustness["rappel"].min())
         for name, value in (train_summary | test.summary()).items():
             metrics[name] = value
@@ -226,7 +278,7 @@ def train(
         mlflow.log_params(
             {
                 **{k: str(v) for k, v in train_params.items()},
-                "best_iteration": booster.best_iteration,
+                "best_iteration": model.booster.best_iteration,
                 "features": len(model.feature_names),
                 "negative_sampling_rate": ml.negative_sampling_rate,
                 "alert_budget": ml.alert_budget,
