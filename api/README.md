@@ -158,6 +158,13 @@ débit, taux de blocage et latences observées (médiane, 95e, 99e centile, maxi
 fois la démonstration de mise en production et la mesure du budget de 100 ms sur des données
 réelles.
 
+Le rejeu **préchauffe d'abord le magasin** avec les trente jours qui précèdent, pour les
+clients concernés. Sans cela il partirait d'un magasin vide : tous les appareils y
+paraîtraient neufs, toutes les vélocités vaudraient zéro, et le modèle verrait partout le
+même profil de test de carte — des scores identiques, et un volume d'alertes dix fois
+supérieur au budget. En production le magasin est alimenté en continu par le flux Kafka ; le
+préchauffage reconstitue cette situation. `--no-warmup` permet d'observer la différence.
+
 Réglages : `ONDINE_API_REDIS_URL`, `ONDINE_API_MODEL_ALIAS` (par défaut `champion`),
 `ONDINE_API_LATENCY_BUDGET_MS`, `ONDINE_API_FAIL_OPEN`, `ONDINE_API_EXPLAIN_FACTORS`.
 

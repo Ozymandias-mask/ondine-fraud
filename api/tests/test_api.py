@@ -457,3 +457,28 @@ def test_the_interface_neutralises_injected_markup(analyste):
     rendu = http.get("/alertes/TX-XSS-1").text
     assert "<script>" not in rendu, "aucun balisage injecté ne doit être interprété"
     assert "&lt;script&gt;" in rendu, "la donnée reste visible, sous forme de texte"
+
+
+def test_warming_the_store_gives_the_model_a_real_history(lake, store):
+    """Sans préchauffage, un rejeu part d'un magasin vide et les scores ne valent rien.
+
+    Tous les appareils y paraissent neufs et toutes les vélocités valent zéro : le modèle
+    voit partout le même profil. Le préchauffage reconstitue l'historique des clients
+    concernés, comme le ferait le flux Kafka en production.
+    """
+    from ondine_api.features import compute
+    from ondine_api.replay import read_transactions, warm_store
+
+    transactions = read_transactions(lake, "2025-04", 200)
+    assert transactions, "le lac de test doit contenir des transactions à rejouer"
+
+    froid = [compute(t, store.state(t))["card_tx_count_24h"] for t in transactions]
+    assert set(froid) == {0}, "magasin vide : aucune vélocité, donc aucun signal"
+
+    lus = warm_store(lake, store, transactions)
+    assert lus["transactions"] > 0 and lus["clients"] > 0
+
+    chaud = [compute(t, store.state(t))["card_tx_count_24h"] for t in transactions]
+    ages = [compute(t, store.state(t))["device_age_hours_for_client"] for t in transactions]
+    assert max(chaud) > 0, "après préchauffage, l'historique de carte existe"
+    assert max(a for a in ages if a is not None) > 0, "les appareils ne sont plus tous neufs"

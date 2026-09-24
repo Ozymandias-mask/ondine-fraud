@@ -74,6 +74,49 @@ class ReplayReport:
         }
 
 
+def warm_store(settings: Settings, store, transactions: list[dict], days: int = 30) -> dict:
+    """Préchauffe le magasin en ligne avec l'historique des clients concernés.
+
+    Sans cette étape, un rejeu part d'un magasin vide : tous les appareils paraissent neufs,
+    toutes les vélocités valent zéro, et le modèle voit partout le même profil. Les scores
+    obtenus ne voudraient rien dire. En production le magasin est alimenté en continu par le
+    flux Kafka ; ici on reconstitue les trente jours qui précèdent, pour les seuls clients
+    rejoués — c'est ce qui rend la démonstration représentative.
+    """
+    clients = sorted({t["client_id"] for t in transactions if t.get("client_id")})
+    debut = min(str(t["event_time"]) for t in transactions)
+    if not clients:
+        return {"clients": 0, "transactions": 0, "evenements": 0}
+    con = connect(settings)
+    lus = {"clients": len(clients), "transactions": 0, "evenements": 0}
+    try:
+        for dataset, recorder, cle in (
+            ("transactions", store.record_transaction, "transactions"),
+            ("app_events", store.record_event, "evenements"),
+        ):
+            pattern = settings.uri("bronze", dataset, "**", "*.parquet")
+            fenetre = (
+                " WHERE client_id = ANY(?) AND event_time < ?::TIMESTAMPTZ"
+                f"   AND event_time >= ?::TIMESTAMPTZ - INTERVAL {int(days)} DAYS"
+                " ORDER BY event_time"
+            )
+            # Motif issu de la configuration ; les valeurs passent en paramètres.
+            query = f"SELECT * FROM read_parquet('{pattern}')" + fenetre  # noqa: S608
+            resultat = con.execute(query, [clients, debut, debut])
+            colonnes = [d[0] for d in resultat.description]
+            for ligne in resultat.fetchall():
+                recorder(dict(zip(colonnes, ligne, strict=True)))
+                lus[cle] += 1
+    finally:
+        con.close()
+    logger.info(
+        "Magasin préchauffé : %(transactions)d transactions et %(evenements)d événements"
+        " pour %(clients)d clients",
+        lus,
+    )
+    return lus
+
+
 def read_transactions(settings: Settings, month: str, limit: int) -> list[dict]:
     """Lit des messages d'autorisation bruts (couche bronze), dans l'ordre chronologique."""
     con = connect(settings)

@@ -54,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     rejeu.add_argument("--month", required=True, help="mois à rejouer, au format AAAA-MM")
     rejeu.add_argument("--limit", type=int, default=5000, help="nombre de transactions")
     rejeu.add_argument("--url", default="http://scoring-api:8000", help="adresse de l'API")
+    rejeu.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="ne pas préchauffer le magasin (scores non représentatifs)",
+    )
     args = parser.parse_args(argv)
 
     if args.commande == "serve":
@@ -69,9 +74,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.commande == "replay":
-        from .replay import read_transactions, replay
+        from .replay import read_transactions, replay, warm_store
 
-        transactions = read_transactions(Settings.from_env(), args.month, args.limit)
+        pipelines = Settings.from_env()
+        transactions = read_transactions(pipelines, args.month, args.limit)
+        if not args.no_warmup:
+            api = ApiSettings.from_env()
+            warm_store(
+                pipelines,
+                OnlineStore.from_url(api.redis_url, api.pseudonymisation_key),
+                transactions,
+            )
         logger.info("%d transactions lues, envoi à %s", len(transactions), args.url)
         report = replay(args.url, transactions)
         print(json.dumps(report.summary(), indent=2, ensure_ascii=False))
