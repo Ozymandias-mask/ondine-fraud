@@ -39,3 +39,19 @@ scrape_configs:
         type: A
         port: 8001
         refresh_interval: 30s
+
+  # API de scoring : latence de décision, volume, mode dégradé, modèle servi.
+  - job_name: scoring-api
+    dns_sd_configs:
+      - names: ["scoring-api"]
+        type: A
+        port: 8000
+        refresh_interval: 30s
+
+  # Alimentation du magasin de variables en ligne : fraîcheur des variables vues par l'API.
+  - job_name: online-features
+    dns_sd_configs:
+      - names: ["online-features"]
+        type: A
+        port: 9109
+        refresh_interval: 30s

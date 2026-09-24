@@ -70,7 +70,11 @@ def fraud_reports(
             .reset_index()
         )
         reported = incidents[rng.random(len(incidents)) < cfg.fraud_report_rate].copy()
-        median = reported["fraud_type"].map(lambda t: _REPORT_PROFILE[t][0]).to_numpy()
+        # Type forcé : sur un lot sans incident déclaré, la série vide resterait en type
+        # « objet » et le tirage aléatoire échouerait.
+        median = (
+            reported["fraud_type"].map(lambda t: _REPORT_PROFILE[t][0]).astype(float).to_numpy()
+        )
         delay_h = np.clip(rng.lognormal(np.log(median * 24), 0.6), 1, 90 * 24)
         reported["reported_at"] = _naive_utc(reported["last_time"]) + pd.to_timedelta(
             delay_h, unit="h"

@@ -538,6 +538,94 @@ services:
         limits:
           memory: 10G
 
+  # ------------------------------------------------- API de scoring temps réel (profil api)
+  # Magasin de variables en ligne : l'historique glissant (carte, client, appareil,
+  # bénéficiaire) dont l'API a besoin pour décider en moins de 100 ms. Redis est un cache
+  # reconstructible à partir du flux Kafka, mais il est tout de même persisté : un redémarrage
+  # ne fait pas repartir la détection avec un historique vide.
+  redis:
+    image: redis:8.2.3-alpine
+    profiles: [api]
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    command: >
+      redis-server --appendonly yes --appendfsync everysec
+      --maxmemory 1gb --maxmemory-policy noeviction
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
+
+  scoring-api:
+    build: {context: ., dockerfile: api/Dockerfile}
+    image: ondine/api:local
+    profiles: [api]
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    ports: ["8010:8000"]
+    environment:
+      <<: *pipeline-env
+      ONDINE_API_REDIS_URL: redis://redis:6379/0
+      ONDINE_API_MODEL_ALIAS: champion
+      ONDINE_API_LATENCY_BUDGET_MS: "100"
+      # Une banque ne refuse pas tous ses paiements parce qu'un cache est tombé : en cas
+      # d'incident, la décision est rendue sans historique et signalée comme dégradée.
+      ONDINE_API_FAIL_OPEN: "true"
+      API_WORKERS: "2"
+      DUCKDB_THREADS: "1"
+      DUCKDB_MEMORY_LIMIT: 512MB
+    depends_on:
+      redis: {condition: service_healthy}
+      mlflow-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/pret', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # Alimente le magasin en ligne depuis Kafka, dans son propre groupe de consommateurs :
+  # une panne ici n'affecte ni l'ingestion du lac, ni inversement.
+  online-features:
+    build: {context: ., dockerfile: api/Dockerfile}
+    image: ondine/api:local
+    profiles: [api]
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [ondine]
+    command: ["feed"]
+    environment:
+      <<: *pipeline-env
+      ONDINE_API_REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP: kafka-1:19092,kafka-2:19092,kafka-3:19092
+      ONDINE_API_CONSUMER_GROUP: online-features
+      METRICS_PORT: "9109"
+    depends_on:
+      redis: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9109/metrics', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
   # ---------------------------------------------------------------- Orchestration Airflow (profil orchestration)
   # Planification et reprise automatiques de tous les traitements batch (DAG dans pipelines/dags).
   # Exécuteur local : les tâches tournent dans le conteneur du scheduler, le pool « duckdb »
@@ -656,6 +744,7 @@ networks:
     name: ondine
 
 volumes:
+  redis-data:
   mlflow-auth:
   kafka-1-data:
   kafka-2-data:

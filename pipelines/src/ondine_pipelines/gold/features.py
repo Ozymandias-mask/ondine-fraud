@@ -18,7 +18,7 @@ modèle (tests de biais) ; ils ne doivent pas être utilisés comme variables d'
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import duckdb
 
@@ -103,24 +103,48 @@ def build_first_seen(settings: Settings, orchestrator_id: str | None = None) -> 
     return {"rows": run.rows_out}
 
 
+def _months_covering(
+    con: duckdb.DuckDBPyConnection,
+    settings: Settings,
+    dataset: str,
+    year: int,
+    month: int,
+    lookback: int,
+) -> list[tuple[int, int]]:
+    """Mois à lire pour que le recul demandé soit **entièrement** couvert.
+
+    Un seul mois précédent ne suffit pas toujours : au 1er mars, une fenêtre de 30 jours
+    remonte au 30 janvier, or février ne compte que 28 jours. Sans ce calcul, les variables
+    d'historique des premiers jours du mois seraient tronquées — et différeraient de celles
+    que l'API calcule en production, qui ne connaît pas de découpage mensuel.
+    """
+    needed = _month_start(year, month) - timedelta(days=lookback)
+    months, cursor = [(year, month)], (year, month)
+    while _month_start(*cursor) > needed:
+        cursor = _previous(*cursor)
+        if not exists(con, month_glob(settings, "silver", dataset, *cursor)):
+            break  # début de l'historique : il n'y a rien de plus à lire
+        months.insert(0, cursor)
+    return months
+
+
 def _load_inputs(
     con: duckdb.DuckDBPyConnection, settings: Settings, year: int, month: int, run: Run
 ) -> None:
-    """Charge le mois et son historique (31 jours avant) depuis la couche silver."""
+    """Charge le mois et l'historique nécessaire à ses fenêtres, depuis la couche silver."""
     start = _month_start(year, month)
-    months = [(year, month)]
-    prev = _previous(year, month)
-    if exists(con, month_glob(settings, "silver", "transactions", *prev)):
-        months.insert(0, prev)
     # Seules les colonnes et les événements utiles sont chargés, avec le recul strictement
-    # nécessaire (30 jours pour les transactions, 7 jours pour les événements) : la mémoire
-    # utilisée reste proportionnelle au volume d'un mois.
+    # nécessaire (31 jours pour les transactions, 8 pour les événements) : la mémoire utilisée
+    # reste proportionnelle au volume d'un mois.
     sources = {
         "tx_all": ("transactions", LOOKBACK_DAYS, TX_COLUMNS, "TRUE"),
         "ev_all": ("app_events", 8, EVENT_COLUMNS, f"event_type IN {EVENT_TYPES_USED}"),
     }
     for table, (dataset, lookback, columns, condition) in sources.items():
-        files = [month_glob(settings, "silver", dataset, y, m) for y, m in months]
+        files = [
+            month_glob(settings, "silver", dataset, y, m)
+            for y, m in _months_covering(con, settings, dataset, year, month, lookback)
+        ]
         require_input(con, files[-1])
         file_list = "[" + ", ".join(f"'{f}'" for f in files) + "]"
         con.execute(f"""
@@ -162,14 +186,19 @@ SELECT transaction_id,
     count(*) FILTER (WHERE channel = 'ecommerce' AND amount < 5) OVER card_w1h
         AS card_small_online_tx_1h,
     count(*) FILTER (WHERE auth_status = 'declined') OVER card_w1h AS card_declined_1h,
-    date_diff('second', lag(event_time) OVER (PARTITION BY card_id ORDER BY event_time), event_time)
+    -- Délai depuis le paiement précédent, borné à 30 jours. La borne n'est pas cosmétique :
+    -- sans elle, la valeur dépendrait de la profondeur d'historique chargée ici, donc
+    -- différerait entre l'entraînement et le calcul en ligne de l'API (fuite de contexte).
+    date_diff('second', max(event_time) OVER card_w30d, event_time)
         AS seconds_since_prev_card_tx
 FROM tx_all WHERE card_id IS NOT NULL
 WINDOW
     card_w1h AS (PARTITION BY card_id ORDER BY event_time
             RANGE BETWEEN INTERVAL 1 HOUR PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW),
     card_w24h AS (PARTITION BY card_id ORDER BY event_time
-             RANGE BETWEEN INTERVAL 24 HOURS PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW);
+             RANGE BETWEEN INTERVAL 24 HOURS PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW),
+    card_w30d AS (PARTITION BY card_id ORDER BY event_time
+             RANGE BETWEEN INTERVAL 30 DAYS PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW);
 
 -- 2. Habitudes du client sur 30 jours et virements récents.
 CREATE OR REPLACE TEMP TABLE f_client AS
@@ -207,7 +236,11 @@ SELECT transaction_id,
         + cos(radians(prev_lat)) * cos(radians(lat)) * pow(sin(radians(lon - prev_lon) / 2), 2)
     )) AS km_from_prev_physical,
     date_diff('second', prev_time, event_time) / 3600.0 AS hours_from_prev_physical
-FROM physical WHERE prev_time IS NOT NULL;
+FROM physical
+-- Même borne de 30 jours que ci-dessus : un déplacement « depuis un paiement d'il y a trois
+-- mois » n'est pas un signal de vitesse, et rendrait la variable dépendante de l'historique
+-- chargé. C'est aussi la fenêtre dont dispose le magasin en ligne de l'API.
+WHERE prev_time IS NOT NULL AND date_diff('second', prev_time, event_time) <= 30 * 86400;
 
 -- 4. Signaux de session applicative avant la transaction (chronologie commune par client).
 CREATE OR REPLACE TEMP TABLE timeline AS

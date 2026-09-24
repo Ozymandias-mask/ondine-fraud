@@ -45,6 +45,9 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | `pipelines-cli` | traitements batch (profil pipelines) | – | voir `pipelines/README.md` |
 | `airflow-*` | orchestration (profil orchestration) | http://localhost:8081 | comptes nominatifs (admin, consultation), relances automatiques |
 | `mlflow` | suivi des expériences et registre des modèles | http://localhost:5001 | authentification, compte de service distinct, seul détenteur d'une clé S3 pour les artefacts |
+| `redis` | magasin de variables en ligne (profil api) | réseau interne | persistance activée, durées de vie alignées sur les fenêtres du modèle |
+| `scoring-api` | décision de blocage d'un paiement (profil api) | http://localhost:8010/docs | image de service minimale, compte non administrateur, mode dégradé |
+| `online-features` | Kafka → magasin en ligne (profil api) | réseau interne, métriques :9109 | groupe de consommateurs distinct de l'ingestion |
 
 Tous les ports sont liés à `127.0.0.1` : rien n'est exposé sur le réseau local.
 
@@ -80,6 +83,10 @@ docker compose --profile orchestration up -d --build
 
 # 6. Modèle de fraude (entraînement ; suivi dans MLflow : http://localhost:5001)
 docker compose --profile ml run --rm --build ml-cli train
+
+# 7. API de scoring temps réel (contrat : http://localhost:8010/docs)
+docker compose --profile api up -d --build
+docker compose --profile api run --rm scoring-api referentials
 ```
 
 ### Mettre à jour le dépôt à partir d'un bundle livré

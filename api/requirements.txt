@@ -1,0 +1,6 @@
+# Dépendances propres à l'API de scoring (versions figées), ajoutées à l'image des
+# traitements qui fournit déjà le modèle (paquet ml/) et l'accès au data lake.
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+redis==8.1.0
+pydantic==2.13.5

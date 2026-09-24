@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ondine-api"
+version = "1.0.0"
+description = "API de scoring de fraude temps réel d'Ondine Bank (magasin de variables en ligne)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "redis>=5.2",
+    "pydantic>=2.10",
+    "prometheus-client>=0.21",
+]
+
+[project.scripts]
+ondine-api = "ondine_api.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

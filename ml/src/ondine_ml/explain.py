@@ -69,10 +69,7 @@ def readable(feature: str) -> str:
 
 def shap_values(model: FraudModel, features: pd.DataFrame) -> np.ndarray:
     """Contributions SHAP exactes de LightGBM (dernière colonne : valeur de base)."""
-    prepared = model.prepare(features)
-    return model.booster.predict(
-        prepared, pred_contrib=True, num_iteration=model.booster.best_iteration
-    )
+    return model.contributions(model.prepare(features))
 
 
 def global_importance(
@@ -95,6 +92,27 @@ def global_importance(
     return importance.sort_values("contribution_moyenne", ascending=False).reset_index(drop=True)
 
 
+def _factors(model: FraudModel, contributions: np.ndarray, value_of, top: int) -> list[dict]:
+    """Met en forme les `top` contributions les plus fortes, valeurs comprises."""
+    order = np.argsort(np.abs(contributions))[::-1][:top]
+    factors = []
+    for index in order:
+        name = model.feature_names[index]
+        value = value_of(name)
+        factors.append(
+            {
+                "variable": name,
+                "libellé": readable(name),
+                "valeur": None
+                if value is None or (isinstance(value, float) and np.isnan(value))
+                else (str(value) if isinstance(value, str) else float(value)),
+                "effet": "augmente le risque" if contributions[index] > 0 else "diminue le risque",
+                "poids": round(float(contributions[index]), 4),
+            }
+        )
+    return factors
+
+
 def explain_one(model: FraudModel, row: pd.DataFrame, top: int = 4) -> list[dict[str, object]]:
     """Facteurs ayant le plus poussé la décision pour une transaction.
 
@@ -102,24 +120,25 @@ def explain_one(model: FraudModel, row: pd.DataFrame, top: int = 4) -> list[dict
     formulation lisible. C'est ce que l'API renvoie et ce qu'affiche l'interface analyste.
     """
     contributions = shap_values(model, row)[0][:-1]
-    order = np.argsort(np.abs(contributions))[::-1][:top]
     prepared = model.prepare(row).iloc[0]
-    factors = []
-    for index in order:
-        name = model.feature_names[index]
-        value = prepared[name]
-        factors.append(
-            {
-                "variable": name,
-                "libellé": readable(name),
-                "valeur": None
-                if pd.isna(value)
-                else (str(value) if isinstance(value, str) else float(value)),
-                "effet": "augmente le risque" if contributions[index] > 0 else "diminue le risque",
-                "poids": round(float(contributions[index]), 4),
-            }
-        )
-    return factors
+    return _factors(
+        model,
+        contributions,
+        lambda name: None if pd.isna(prepared[name]) else prepared[name],
+        top,
+    )
+
+
+def explain_row(
+    model: FraudModel, matrix: np.ndarray, values: dict[str, object], top: int = 4
+) -> list[dict[str, object]]:
+    """Même explication, à partir d'un tableau déjà préparé (chemin de l'API).
+
+    Les valeurs affichées sont celles reçues dans la demande — un nom de catégorie lisible
+    plutôt que son code interne — et le prétraitement n'est pas refait une deuxième fois.
+    """
+    contributions = model.contributions(matrix)[0][:-1]
+    return _factors(model, contributions, values.get, top)
 
 
 def sentence(factors: list[dict[str, object]]) -> str:

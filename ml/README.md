@@ -3,8 +3,9 @@
 Entraînement, évaluation, explicabilité et enregistrement du modèle qui décide, avant
 l'autorisation d'un paiement, s'il doit être bloqué ou signalé.
 
-> État : entraînement, suivi MLflow, explicabilité, tests de biais et de robustesse livrés.
-> API de scoring, interface analyste, dérive et réentraînement automatique arrivent ensuite.
+> État : entraînement, suivi MLflow, explicabilité, tests de biais et de robustesse livrés ;
+> API de scoring temps réel livrée (voir `api/`). Interface analyste, détection de dérive et
+> réentraînement automatique arrivent ensuite.
 
 ## Ce que fait le modèle
 
