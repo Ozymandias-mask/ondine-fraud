@@ -1,5 +1,8 @@
-# Dépendances propres à l'API de scoring (versions figées), ajoutées à l'image des
-# traitements qui fournit déjà le modèle (paquet ml/) et l'accès au data lake.
+# Dépendances propres à l'image de l'API de scoring (versions figées). Elles complètent
+# `pipelines/requirements.txt`, qui suppose l'image Airflow : celle-ci fournit pyarrow et
+# prometheus-client, l'image de service — volontairement minimale — ne les a pas.
+pyarrow==25.0.1
+prometheus-client==0.26.0
 fastapi==0.141.1
 uvicorn[standard]==0.53.0
 redis==8.1.0

@@ -73,18 +73,31 @@ def check(candidate: dict[str, float], champion: dict[str, float], ml: MlSetting
         return reasons
     if auc < ml.min_auc_pr:
         reasons.append(f"qualité insuffisante : AUC-PR {auc:.3f} < {ml.min_auc_pr}")
-    for name, value in candidate.items():
-        if name.endswith("_recall_ratio") and value < ml.min_fairness_ratio:
-            reasons.append(
-                f"équité insuffisante : {name} {value:.3f} < {ml.min_fairness_ratio}"
-                " (règle des 4/5)"
-            )
     alert_rate = candidate.get("alert_rate")
     if alert_rate is not None and alert_rate > 2 * ml.alert_budget:
         reasons.append(
             f"budget d'alertes dépassé : {100 * alert_rate:.3f} %"
             f" > {100 * 2 * ml.alert_budget:.3f} %"
         )
+    # Un volume d'alertes effondré signale un seuil devenu inadapté (les scores ont baissé
+    # depuis la période de calage) : le modèle laisserait passer presque toutes les fraudes.
+    effondre = alert_rate is not None and alert_rate < ml.alert_budget / 10
+    if effondre:
+        ratio = candidate.get("threshold_drift_ratio")
+        reasons.append(
+            f"volume d'alertes effondré : {100 * alert_rate:.5f} %"
+            f" au lieu de {100 * ml.alert_budget:.3f} % — seuil à recaler"
+            + (f" (il est {ratio:.1f} fois trop haut)" if ratio else "")
+        )
+    # Les rapports d'équité ne veulent rien dire sur une poignée d'alertes : ils ne sont
+    # examinés que si le modèle alerte à un volume réaliste.
+    if not effondre:
+        for name, value in candidate.items():
+            if name.endswith("_recall_ratio") and value < ml.min_fairness_ratio:
+                reasons.append(
+                    f"équité insuffisante : {name} {value:.3f} < {ml.min_fairness_ratio}"
+                    " (règle des 4/5)"
+                )
     cost, previous_cost = candidate.get("cost_total_eur"), champion.get("cost_total_eur")
     if previous_cost is not None and cost is not None and cost > previous_cost:
         reasons.append(

@@ -43,7 +43,11 @@ Ces attributs servent uniquement à mesurer d'éventuels écarts de traitement.
   rapports entre groupes (règle des 4/5).
 - **Robustesse** : 10 % puis 50 % de variables manquantes, montants bruités, catégorie
   inconnue — le modèle doit se dégrader progressivement, jamais s'effondrer.
-- **Dérive** : performance mois par mois sur le jeu de test.
+- **Dérive** : performance mois par mois sur le jeu de test, et surtout **dérive du seuil** :
+  le budget d'alertes est une contrainte d'organisation (une transaction sur mille), donc un
+  quantile. On compare le seuil calé sur la validation au seuil que le même budget imposerait
+  sur la période de test (`threshold_drift_ratio`) : si les scores baissent, un seuil figé
+  fait chuter le volume d'alertes sans que la qualité du modèle ait bougé.
 
 Tout est enregistré dans MLflow : paramètres, métriques, graphiques, modèle, **empreinte des
 données** (fichiers, lignes, bornes, somme de contrôle) et graine aléatoire — un entraînement
@@ -74,6 +78,7 @@ nommant les motifs, si l'un d'eux n'est pas tenu.
 | Qualité (AUC-PR) | ≥ 0,50 | un modèle qui ne détecte rien ne remplace personne |
 | Équité (règle des 4/5) | rapport de rappel ≥ 0,80 par tranche d'âge et région | ne pas introduire de discrimination (AI Act, art. 10) |
 | Budget d'alertes | ≤ 2 × le budget visé | l'équipe fraude ne peut pas traiter davantage |
+| Volume d'alertes | ≥ un dixième du budget visé | un volume effondré trahit un seuil devenu inadapté : le modèle laisserait passer presque tout |
 | Coût métier | inférieur au champion en place | une nouvelle version doit faire gagner de l'argent |
 
 Un refus est journalisé **et** inscrit sur la version dans MLflow (`promotion_refusee`). Le

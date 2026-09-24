@@ -190,6 +190,11 @@ def train(
             **ev.threshold_metrics(y_test, test_scores, amounts, model.threshold),
             **ev.legacy_rules_metrics(test),
         }
+        # Le seuil est calé sur la validation ; on mesure ce que le même budget d'alertes
+        # imposerait sur la période de test, plus récente. L'écart est une dérive.
+        metrics.update(
+            ev.threshold_drift(y_test, test_scores, amounts, model.threshold, ml.alert_budget)
+        )
         fairness = ev.fairness_report(test, test_scores, model.threshold)
         metrics.update(ev.fairness_gaps(fairness))
         robustness = ev.robustness_report(
