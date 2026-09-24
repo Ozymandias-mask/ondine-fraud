@@ -57,7 +57,27 @@ docker compose --profile ml build ml-cli
 docker compose --profile ml run --rm ml-cli train
 docker compose --profile ml run --rm ml-cli evaluate --alias challenger
 docker compose --profile ml run --rm ml-cli explain --alias challenger --rank 1
+# Mise en service : le candidat ne devient « champion » que s'il passe les critères.
+docker compose --profile ml run --rm ml-cli promote
+docker compose --profile ml run --rm ml-cli rollback   # retour au champion précédent
 ```
+
+## Mise en service d'un modèle
+
+L'entraînement enregistre le modèle sous l'alias **`challenger`** ; l'API de scoring ne sert
+que le **`champion`**. Le passage de l'un à l'autre n'est jamais automatique à l'aveugle : la
+commande `promote` vérifie des critères écrits à l'avance sur le jeu de test et refuse, en
+nommant les motifs, si l'un d'eux n'est pas tenu.
+
+| Critère | Seuil | Pourquoi |
+|---|---|---|
+| Qualité (AUC-PR) | ≥ 0,50 | un modèle qui ne détecte rien ne remplace personne |
+| Équité (règle des 4/5) | rapport de rappel ≥ 0,80 par tranche d'âge et région | ne pas introduire de discrimination (AI Act, art. 10) |
+| Budget d'alertes | ≤ 2 × le budget visé | l'équipe fraude ne peut pas traiter davantage |
+| Coût métier | inférieur au champion en place | une nouvelle version doit faire gagner de l'argent |
+
+Un refus est journalisé **et** inscrit sur la version dans MLflow (`promotion_refusee`). Le
+modèle sortant garde l'alias `ancien_champion` : le retour arrière est immédiat.
 
 Identifiants MLflow dans `.env` : `MLFLOW_ADMIN_USER` pour l'interface web, compte de service
 `MLFLOW_SERVICE_USER` pour les traitements (aucun des deux ne détient de clé S3 : le serveur

@@ -148,3 +148,33 @@ def test_model_from_registry_handles_imperfect_input(lake, ml_settings):
     decisions = model.decide(sample)
     assert set(decisions.columns) == {"probability", "alert", "threshold"}
     assert decisions["alert"].equals(decisions["probability"] >= model.threshold)
+
+
+def test_promotion_applies_the_written_criteria(trained, ml_settings):
+    """Un candidat n'est promu que s'il passe les critères ; un refus est tracé et motivé."""
+    import mlflow
+    from ondine_ml.promote import check, promote, rollback
+
+    mlflow.set_tracking_uri(ml_settings.tracking_uri)
+    client = mlflow.MlflowClient(ml_settings.tracking_uri)
+
+    decision = promote(ml_settings)
+    assert decision.promoted, decision.reasons
+    assert client.get_model_version_by_alias(ml_settings.model_name, "champion").version == (
+        decision.version
+    )
+
+    # Les critères refusent bien un candidat insuffisant, en nommant chaque motif.
+    mauvais = {
+        "auc_pr": 0.1,
+        "alert_rate": 0.05,
+        "cost_total_eur": 900_000.0,
+        "fairness_age_band_recall_ratio": 0.4,
+    }
+    motifs = check(mauvais, {"cost_total_eur": 100_000.0}, ml_settings)
+    assert len(motifs) == 4
+    assert any("AUC-PR" in m for m in motifs) and any("4/5" in m for m in motifs)
+
+    # Le retour arrière est possible même quand aucun champion précédent n'existe : il le dit.
+    retour = rollback(ml_settings)
+    assert retour.promoted is False and "aucun champion précédent" in retour.reasons[0]

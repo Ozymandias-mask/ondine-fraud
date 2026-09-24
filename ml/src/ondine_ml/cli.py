@@ -1,4 +1,4 @@
-"""Ligne de commande du modèle : `ondine-ml train`, `evaluate`, `explain`."""
+"""Ligne de commande du modèle : `train`, `evaluate`, `explain`, `promote`, `rollback`."""
 
 from __future__ import annotations
 
@@ -32,6 +32,14 @@ def main(argv: list[str] | None = None) -> int:
     explain_cmd.add_argument(
         "--rank", type=int, default=1, help="n-ième transaction la plus risquée"
     )
+    promote_cmd = sub.add_parser(
+        "promote", help="Promeut le candidat en champion s'il passe les critères"
+    )
+    promote_cmd.add_argument("--alias", default="challenger", help="Alias du candidat")
+    promote_cmd.add_argument(
+        "--force", action="store_true", help="Promouvoir sans vérifier les critères (exceptionnel)"
+    )
+    sub.add_parser("rollback", help="Remet en service le champion précédent")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -57,6 +65,16 @@ def main(argv: list[str] | None = None) -> int:
                     evaluate_registered(settings, ml, args.alias), indent=2, ensure_ascii=False
                 )
             )
+        elif args.command in ("promote", "rollback"):
+            from .promote import promote, rollback
+
+            decision = (
+                rollback(ml)
+                if args.command == "rollback"
+                else promote(ml, args.alias, force=args.force)
+            )
+            print(json.dumps(decision.as_dict(), indent=2, ensure_ascii=False))
+            return 0 if decision.promoted else 2
         elif args.command == "explain":
             from .serving import explain_registered
 
