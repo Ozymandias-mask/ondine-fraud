@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 from ondine_pipelines.lake import connect
 from ondine_pipelines.settings import Settings
@@ -89,8 +90,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.flush:
                 # Uniquement pour rendre une démonstration reproductible : en production le
                 # magasin n'est jamais vidé, il se renouvelle par ses durées de vie.
+                # Suppression asynchrone : vider plusieurs gigaoctets bloquerait Redis bien
+                # au-delà du délai d'attente d'un client réglé pour du temps réel.
                 logger.warning("Magasin en ligne vidé avant le rejeu.")
-                magasin.redis.flushdb()
+                magasin.redis.flushdb(asynchronous=True)
+                time.sleep(2)  # laisse la libération démarrer avant d'écrire à nouveau
             if not args.no_warmup:
                 warm_store(pipelines, magasin, transactions)
         logger.info("%d transactions lues, envoi à %s", len(transactions), args.url)
