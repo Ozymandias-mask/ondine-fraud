@@ -42,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("rollback", help="Remet en service le champion précédent")
     metrics_cmd = sub.add_parser("metrics", help="Affiche toutes les métriques d'un modèle")
     metrics_cmd.add_argument("--alias", default="challenger")
+    report_cmd = sub.add_parser("report", help="Affiche les rapports détaillés d'un modèle")
+    report_cmd.add_argument("--alias", default="challenger")
+    report_cmd.add_argument("--name", default="", help="Filtre sur le nom du rapport")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -71,6 +74,10 @@ def main(argv: list[str] | None = None) -> int:
             from .promote import metrics_of
 
             print(json.dumps(metrics_of(ml, args.alias), indent=2, ensure_ascii=False))
+        elif args.command == "report":
+            from .promote import report_of
+
+            print(json.dumps(report_of(ml, args.alias, args.name), indent=2, ensure_ascii=False))
         elif args.command in ("promote", "rollback"):
             from .promote import promote, rollback
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 import mlflow
 
@@ -123,6 +124,28 @@ def metrics_of(ml: MlSettings, alias: str = CANDIDATE_ALIAS) -> dict[str, object
         "run_id": version.run_id,
         "metriques": {k: round(v, 6) for k, v in sorted(_metrics(client, version).items())},
     }
+
+
+def report_of(ml: MlSettings, alias: str = CANDIDATE_ALIAS, name: str = "") -> dict[str, object]:
+    """Rapports détaillés joints à un entraînement : équité, robustesse, dérive mensuelle.
+
+    Les métriques résument, les rapports expliquent. Quand un critère de promotion est refusé,
+    c'est ici qu'on voit **quel groupe** est concerné et de combien.
+    """
+    mlflow.set_tracking_uri(ml.tracking_uri)
+    client = mlflow.MlflowClient(ml.tracking_uri)
+    version = _version(client, ml.model_name, alias)
+    if version is None or not version.run_id:
+        return {"alias": alias, "erreur": f"aucun modèle sous l'alias « {alias} »"}
+    directory = Path(
+        mlflow.artifacts.download_artifacts(run_id=version.run_id, artifact_path="rapport")
+    )
+    rapports = {}
+    for fichier in sorted(directory.glob("*.csv")):
+        if name and name not in fichier.name:
+            continue
+        rapports[fichier.stem] = fichier.read_text(encoding="utf-8").strip().splitlines()
+    return {"alias": alias, "version": version.version, "rapports": rapports}
 
 
 def promote(

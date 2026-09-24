@@ -200,6 +200,7 @@ def test_every_command_of_the_cli_runs(trained, ml_settings, lake, monkeypatch):
     monkeypatch.setenv("ONDINE_ML_TRAIN", ml_settings.train_bounds)
 
     assert main(["metrics", "--alias", "challenger"]) == 0
+    assert main(["report", "--alias", "challenger", "--name", "equite"]) == 0
     assert main(["explain", "--alias", "challenger", "--rank", "1"]) == 0
     assert main(["promote", "--alias", "challenger", "--force"]) == 0
     assert main(["rollback"]) in (0, 2)
