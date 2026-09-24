@@ -33,6 +33,10 @@ class MlSettings:
     # En deçà, un rappel par groupe ne veut rien dire : le groupe est écarté des comparaisons
     # comme de la correction.
     min_group_frauds: int = 200
+    # Marge de sécurité sur la mesure d'équité faite en validation : ce mois sert aussi à
+    # l'arrêt anticipé, le modèle y est donc flatteur et l'écart entre groupes y paraît plus
+    # faible qu'il ne l'est sur des données jamais vues. On corrige donc avant la limite.
+    fairness_margin: float = 0.1
 
     @classmethod
     def from_env(cls) -> MlSettings:
@@ -59,6 +63,7 @@ class MlSettings:
             min_auc_pr=value("ONDINE_ML_MIN_AUC_PR", cls.min_auc_pr),
             min_fairness_ratio=value("ONDINE_ML_MIN_FAIRNESS_RATIO", cls.min_fairness_ratio),
             min_group_frauds=value("ONDINE_ML_MIN_GROUP_FRAUDS", cls.min_group_frauds),
+            fairness_margin=value("ONDINE_ML_FAIRNESS_MARGIN", cls.fairness_margin),
         )
 
     def split(self) -> Split:

@@ -192,16 +192,24 @@ def train(
         y_valid, valid_scores, valid_amounts, regions = sc.stream_scores(
             settings, split.valid, model, ml.seed, context_column=FAIRNESS_ATTRIBUTE
         )
-        weights = {}
-        if regions is not None:
-            recalls = ev.group_recall(
+        weights, valid_recalls = {}, {}
+        if regions is None:
+            # Un contrôle d'équité qui s'escamote sans bruit ne protège personne.
+            logger.warning(
+                "Attribut d'équité « %s » absent du contexte : aucune correction possible.",
+                FAIRNESS_ATTRIBUTE,
+            )
+        else:
+            valid_recalls = ev.group_recall(
                 regions,
                 y_valid,
                 valid_scores,
                 ev.budget_threshold(valid_scores, ml.alert_budget),
                 min_frauds=ml.min_group_frauds,
             )
-            weights = ev.rebalancing_weights(recalls, ml.min_fairness_ratio)
+            weights = ev.rebalancing_weights(
+                valid_recalls, ml.min_fairness_ratio + ml.fairness_margin
+            )
         if weights:
             logger.info(
                 "Écart de rappel entre régions : réentraînement pondéré (%s)",
@@ -226,6 +234,14 @@ def train(
         train_summary["valid_full_rows"] = float(len(y_valid))
         train_summary["valid_full_frauds"] = float(y_valid.sum())
         train_summary["fairness_reweighted_groups"] = float(len(weights))
+        if valid_recalls:
+            # Mesure en validation conservée telle quelle : c'est elle qui a décidé (ou non)
+            # de la correction, elle doit rester consultable et opposable.
+            train_summary["valid_fairness_region_recall_ratio"] = min(valid_recalls.values()) / max(
+                valid_recalls.values()
+            )
+            for groupe, rappel in valid_recalls.items():
+                train_summary[f"valid_recall_{groupe}"] = rappel
         # Mémoire : le modèle est entraîné, les jeux d'apprentissage ne servent plus.
         bundle.train = bundle.valid = None
         del y_valid, valid_scores, valid_amounts

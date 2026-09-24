@@ -229,3 +229,22 @@ def test_fairness_reweighting_only_corrects_a_real_gap():
 
     # Écart déjà tenu : on ne touche pas à un modèle qui respecte la règle.
     assert rebalancing_weights({"A": 0.90, "B": 0.85}, target_ratio=0.8) == {}
+
+
+def test_training_retrains_with_weights_when_the_gap_requires_it(lake, ml_settings):
+    """Quand la règle des 4/5 n'est pas tenue, l'entraînement repart pondéré — et le dit.
+
+    Vérifie la chaîne complète, pas seulement le calcul des poids : mesure en validation,
+    décision, réentraînement, et trace du nombre de groupes repondérés.
+    """
+    from dataclasses import replace
+
+    from ondine_ml.train import train
+
+    # Marge au maximum et effectif minimal abaissé : le petit jeu de test compte trop peu de
+    # fraudes par région pour le seuil de production.
+    forcé = replace(ml_settings, fairness_margin=1.0, min_group_frauds=5, experiment="tests-equite")
+    result = train(lake, forcé, register=False)
+    assert result.metrics["fairness_reweighted_groups"] > 0
+    assert "valid_fairness_region_recall_ratio" in result.metrics
+    assert result.metrics["auc_pr"] > 0.5, "la correction ne doit pas casser le modèle"
