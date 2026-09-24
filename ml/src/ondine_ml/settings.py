@@ -21,6 +21,8 @@ class MlSettings:
     early_stopping_rounds: int = 80
     alert_budget: float = 0.001
     shap_sample: int = 20_000
+    # Lignes conservées par mois de test pour la robustesse et l'explicabilité.
+    robustness_sample: int = 50_000
     train_bounds: str = "2025-01..2025-08"
     valid_bounds: str = "2025-09..2025-09"
     test_bounds: str = "2025-10..2025-12"
@@ -46,6 +48,7 @@ class MlSettings:
             early_stopping_rounds=value("ONDINE_ML_EARLY_STOPPING", cls.early_stopping_rounds),
             alert_budget=value("ONDINE_ML_ALERT_BUDGET", cls.alert_budget),
             shap_sample=value("ONDINE_ML_SHAP_SAMPLE", cls.shap_sample),
+            robustness_sample=value("ONDINE_ML_ROBUSTNESS_SAMPLE", cls.robustness_sample),
             train_bounds=os.environ.get("ONDINE_ML_TRAIN", cls.train_bounds),
             valid_bounds=os.environ.get("ONDINE_ML_VALID", cls.valid_bounds),
             test_bounds=os.environ.get("ONDINE_ML_TEST", cls.test_bounds),

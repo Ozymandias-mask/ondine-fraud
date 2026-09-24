@@ -1,0 +1,44 @@
+variable,libellé,contribution_moyenne,part_%
+amount,montant,0.22223966126061953,18.384560133792263
+device_age_hours_for_client,ancienneté de l'appareil pour ce client,0.1814695270620875,15.011890379059743
+merchant_category,secteur du marchand,0.1715377830819563,14.190296504229146
+seconds_since_prev_card_tx,délai depuis le paiement précédent,0.13746941367620494,11.372023733079681
+entry_mode,mode de saisie,0.07578901806395462,6.269572911397973
+log_amount,log amount,0.06766287627362527,5.59734572407862
+client_max_amount_30d,client max amount 30d,0.051323419807060976,4.245680057117575
+wallet_type,portefeuille mobile,0.04389038777838189,3.6307897016674633
+is_foreign_merchant,marchand étranger,0.03540779704253857,2.9290756215214344
+event_hour,event hour,0.03274339462001894,2.7086655188440787
+card_tx_count_24h,nombre de paiements de la carte sur 24 h,0.0299348549231874,2.4763318001385257
+mcc,mcc,0.027899628815829306,2.307969697063187
+client_avg_amount_30d,client avg amount 30d,0.02346192888607521,1.9408652803649664
+km_from_prev_physical,distance depuis le dernier paiement physique,0.020905139328104276,1.7293573473914468
+amount_to_client_avg,montant rapporté à l'habitude du client,0.018203961090198593,1.5059050011037516
+travel_speed_kmh,vitesse de déplacement implicite,0.018164979225075407,1.5026802641714714
+beneficiaries_added_24h,bénéficiaires ajoutés sur 24 h,0.011895082130316021,0.9840091164679229
+three_ds_authenticated,authentification 3-D Secure,0.011140641998488065,0.9215987892911195
+wallet_provisionings_7d,ajouts de la carte à un portefeuille mobile sur 7 jours,0.009217482129288948,0.7625072569263142
+new_device_logins_24h,connexions depuis un nouvel appareil sur 24 h,0.007891639796390657,0.6528282376242123
+card_amount_sum_24h,montant cumulé sur la carte en 24 h,0.005108036793978947,0.42255738274547977
+client_tx_count_30d,paiements du client sur 30 jours,0.003475532556711463,0.28751005524114764
+is_night,paiement de nuit,0.0011870640637645863,0.09819872177248933
+card_tx_count_1h,nombre de paiements de la carte dans l'heure,0.0006496868177931472,0.05374471101197069
+card_distinct_merchants_1h,marchands différents dans l'heure,0.0001570178350704297,0.01298914790706491
+sms_otp_challenges_1h,codes SMS demandés dans l'heure,1.265540383399046e-05,0.001046905990963416
+beneficiary_bank_code,beneficiary bank code,0.0,0.0
+card_small_online_tx_1h,petits achats en ligne dans l'heure,0.0,0.0
+card_declined_1h,refus sur la carte dans l'heure,0.0,0.0
+beneficiary_country,pays du bénéficiaire,0.0,0.0
+beneficiary_new_senders_30d,bénéficiaire récemment utilisé par d'autres clients,0.0,0.0
+client_distinct_countries_7d,pays différents sur 7 jours,0.0,0.0
+channel,canal de paiement,0.0,0.0
+client_transfer_amount_24h,montant viré sur 24 h,0.0,0.0
+client_transfers_24h,virements du client sur 24 h,0.0,0.0
+is_new_beneficiary,bénéficiaire jamais utilisé,0.0,0.0
+foreign_ip_logins_24h,connexions depuis l'étranger sur 24 h,0.0,0.0
+failed_logins_24h,échecs de connexion sur 24 h,0.0,0.0
+is_weekend,is weekend,0.0,0.0
+merchant_country,pays du marchand,0.0,0.0
+is_online_merchant,paiement en ligne,0.0,0.0
+password_resets_24h,réinitialisations de mot de passe sur 24 h,0.0,0.0
+sca_method_changes_7d,changements de méthode d'authentification sur 7 jours,0.0,0.0

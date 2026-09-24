@@ -528,13 +528,14 @@ services:
       ONDINE_ML_TRAIN: "2025-01..2025-08"
       ONDINE_ML_VALID: "2025-09..2025-09"
       ONDINE_ML_TEST: "2025-10..2025-12"
-      DUCKDB_MEMORY_LIMIT: 6GB
+      # Le test est évalué mois par mois : DuckDB n'a jamais besoin de plus.
+      DUCKDB_MEMORY_LIMIT: 4GB
     depends_on:
       mlflow-init: {condition: service_completed_successfully}
     deploy:
       resources:
         limits:
-          memory: 14G
+          memory: 10G
 
   # ---------------------------------------------------------------- Orchestration Airflow (profil orchestration)
   # Planification et reprise automatiques de tous les traitements batch (DAG dans pipelines/dags).

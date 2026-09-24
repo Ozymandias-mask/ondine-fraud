@@ -11,6 +11,7 @@ versions des bibliothèques et empreinte des données enregistrées avec le mod�
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import platform
@@ -104,6 +105,52 @@ def _save_artifacts(directory: Path, artifacts: dict[str, object]) -> None:
             target.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _score_test_by_month(
+    settings: Settings,
+    split: ds.Split,
+    model: FraudModel,
+    seed: int,
+    sample_per_month: int,
+) -> tuple[ds.Dataset, ds.Dataset]:
+    """Score le jeu de test mois par mois et n'en garde que ce qui sert à l'évaluation.
+
+    Retourne deux jeux : l'un complet mais sans variables (scores, labels, contexte), pour
+    les métriques et l'équité ; l'autre échantillonné avec ses variables, pour la robustesse
+    et l'explicabilité. Un mois est libéré dès qu'il est scoré : la mémoire reste constante,
+    quel que soit le nombre de mois de test.
+    """
+    contexts, targets, samples, sample_targets, sample_contexts = [], [], [], [], []
+    for period in ds.months_between(split.test):
+        month = ds.load_month(settings, period, model.feature_names, model.categories, seed)
+        if not len(month.target):
+            continue
+        context = month.context.copy()
+        context["score"] = model.probabilities(month.features)
+        contexts.append(context)
+        targets.append(month.target)
+        keep = min(sample_per_month, len(month.target))
+        index = month.features.sample(keep, random_state=seed).index
+        samples.append(month.features.loc[index])
+        sample_targets.append(month.target.loc[index])
+        sample_contexts.append(month.context.loc[index])
+        del month
+        gc.collect()
+
+    full = ds.Dataset(
+        name="test",
+        features=pd.DataFrame(),
+        target=pd.concat(targets, ignore_index=True),
+        context=pd.concat(contexts, ignore_index=True),
+    )
+    sample = ds.Dataset(
+        name="test_sample",
+        features=pd.concat(samples, ignore_index=True),
+        target=pd.concat(sample_targets, ignore_index=True),
+        context=pd.concat(sample_contexts, ignore_index=True),
+    )
+    return full, sample
+
+
 def train(
     settings: Settings,
     ml: MlSettings | None = None,
@@ -118,7 +165,8 @@ def train(
     mlflow.set_tracking_uri(ml.tracking_uri)
     mlflow.set_experiment(ml.experiment)
 
-    bundle = ds.load(settings, split, ml.negative_sampling_rate, ml.seed)
+    # Entraînement et validation d'abord ; le test est lu ensuite, mois par mois.
+    bundle = ds.load(settings, split, ml.negative_sampling_rate, ml.seed, parts=("train", "valid"))
     train_params = {**DEFAULT_PARAMS, **(params or {}), "seed": ml.seed, "deterministic": True}
 
     with mlflow.start_run(run_name=f"lightgbm-{time.strftime('%Y%m%d-%H%M%S')}") as run:
@@ -161,35 +209,42 @@ def train(
         )
         model.threshold = float(budget.threshold)
 
-        test_scores = model.probabilities(bundle.test.features)
-        y_test = bundle.test.target.to_numpy()
-        amounts = bundle.test.context["amount"].astype(float).to_numpy()
+        train_summary = bundle.train.summary() | bundle.valid.summary()
+        # Mémoire : le modèle est entraîné, les jeux d'entraînement ne servent plus.
+        del train_set, valid_set, valid_scores
+        bundle.train = bundle.valid = None  # les jeux d'entraînement sont libérés
+        gc.collect()
+
+        test, test_sample = _score_test_by_month(
+            settings, split, model, ml.seed, ml.robustness_sample
+        )
+        test_scores = test.context["score"].to_numpy()
+        y_test = test.target.to_numpy()
+        amounts = test.context["amount"].astype(float).to_numpy()
         metrics = {
             **ev.quality_metrics(y_test, test_scores),
             **ev.threshold_metrics(y_test, test_scores, amounts, model.threshold),
-            **ev.legacy_rules_metrics(bundle.test),
+            **ev.legacy_rules_metrics(test),
         }
-        fairness = ev.fairness_report(bundle.test, test_scores, model.threshold)
+        fairness = ev.fairness_report(test, test_scores, model.threshold)
         metrics.update(ev.fairness_gaps(fairness))
         robustness = ev.robustness_report(
-            bundle.test, model.probabilities, model.threshold, ml.seed
+            test_sample, model.probabilities, model.threshold, ml.seed
         )
-        monthly = ev.monthly_report(bundle.test, test_scores, model.threshold)
-        importance = global_importance(model, bundle.test, sample=ml.shap_sample, seed=ml.seed)
+        monthly = ev.monthly_report(test, test_scores, model.threshold)
+        importance = global_importance(model, test_sample, sample=ml.shap_sample, seed=ml.seed)
         metrics["cost_saving_vs_legacy_eur"] = (
             metrics["legacy_cost_total_eur"] - metrics["cost_total_eur"]
         )
         metrics["robustness_worst_recall"] = float(robustness["rappel"].min())
-        for name, value in (
-            bundle.train.summary() | bundle.valid.summary() | bundle.test.summary()
-        ).items():
+        for name, value in (train_summary | test.summary()).items():
             metrics[name] = value
 
         mlflow.log_params(
             {
                 **{k: str(v) for k, v in train_params.items()},
                 "best_iteration": booster.best_iteration,
-                "features": len(bundle.feature_names),
+                "features": len(model.feature_names),
                 "negative_sampling_rate": ml.negative_sampling_rate,
                 "alert_budget": ml.alert_budget,
                 "threshold_strategy": budget.reason,
@@ -224,7 +279,7 @@ def train(
             )
             mlflow.log_artifacts(str(directory), artifact_path="rapport")
 
-        example = serving_frame(bundle.test.features.head(5))
+        example = serving_frame(test_sample.features.head(5))
         signature = mlflow.models.infer_signature(example, model.decide(example))
         mlflow.pyfunc.log_model(
             name=MODEL_ARTIFACT,

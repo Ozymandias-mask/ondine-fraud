@@ -1,0 +1,66 @@
+artifact_path: /home/claude/ondine-fraud/mlruns/1/models/m-0e26db3caacc40638580a297b061f098/artifacts
+flavors:
+  python_function:
+    cloudpickle_version: 3.1.2
+    code: null
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.pyfunc.model
+    python_model: python_model.pkl
+    python_version: 3.11.15
+    streamable: false
+is_signature_from_type_hint: false
+mlflow_version: 3.16.1
+model_id: m-0e26db3caacc40638580a297b061f098
+model_size_bytes: 89823
+model_uuid: m-0e26db3caacc40638580a297b061f098
+prompts: null
+run_id: 03b3aa45fa3c4b758bfad1e771991e0b
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  serving_input_path: serving_input_example.json
+  type: dataframe
+signature:
+  inputs: '[{"type": "float", "name": "amount", "required": true}, {"type": "float",
+    "name": "amount_to_client_avg", "required": true}, {"type": "float", "name": "beneficiaries_added_24h",
+    "required": false}, {"type": "string", "name": "beneficiary_bank_code", "required":
+    false}, {"type": "string", "name": "beneficiary_country", "required": false},
+    {"type": "float", "name": "beneficiary_new_senders_30d", "required": false}, {"type":
+    "float", "name": "card_amount_sum_24h", "required": true}, {"type": "float", "name":
+    "card_declined_1h", "required": true}, {"type": "float", "name": "card_distinct_merchants_1h",
+    "required": true}, {"type": "float", "name": "card_small_online_tx_1h", "required":
+    true}, {"type": "float", "name": "card_tx_count_1h", "required": true}, {"type":
+    "float", "name": "card_tx_count_24h", "required": true}, {"type": "string", "name":
+    "channel", "required": true}, {"type": "float", "name": "client_avg_amount_30d",
+    "required": true}, {"type": "float", "name": "client_distinct_countries_7d", "required":
+    true}, {"type": "float", "name": "client_max_amount_30d", "required": true}, {"type":
+    "float", "name": "client_transfer_amount_24h", "required": true}, {"type": "float",
+    "name": "client_transfers_24h", "required": true}, {"type": "float", "name": "client_tx_count_30d",
+    "required": true}, {"type": "float", "name": "device_age_hours_for_client", "required":
+    false}, {"type": "string", "name": "entry_mode", "required": true}, {"type": "float",
+    "name": "event_hour", "required": true}, {"type": "float", "name": "failed_logins_24h",
+    "required": false}, {"type": "float", "name": "foreign_ip_logins_24h", "required":
+    false}, {"type": "float", "name": "is_foreign_merchant", "required": true}, {"type":
+    "float", "name": "is_new_beneficiary", "required": false}, {"type": "float", "name":
+    "is_night", "required": true}, {"type": "float", "name": "is_online_merchant",
+    "required": true}, {"type": "float", "name": "is_weekend", "required": true},
+    {"type": "float", "name": "km_from_prev_physical", "required": false}, {"type":
+    "float", "name": "log_amount", "required": true}, {"type": "float", "name": "mcc",
+    "required": false}, {"type": "string", "name": "merchant_category", "required":
+    false}, {"type": "string", "name": "merchant_country", "required": false}, {"type":
+    "float", "name": "new_device_logins_24h", "required": false}, {"type": "float",
+    "name": "password_resets_24h", "required": false}, {"type": "float", "name": "sca_method_changes_7d",
+    "required": false}, {"type": "float", "name": "seconds_since_prev_card_tx", "required":
+    false}, {"type": "float", "name": "sms_otp_challenges_1h", "required": false},
+    {"type": "float", "name": "three_ds_authenticated", "required": false}, {"type":
+    "float", "name": "travel_speed_kmh", "required": false}, {"type": "float", "name":
+    "wallet_provisionings_7d", "required": false}, {"type": "string", "name": "wallet_type",
+    "required": true}]'
+  outputs: '[{"type": "double", "name": "probability", "required": true}, {"type":
+    "boolean", "name": "alert", "required": true}, {"type": "double", "name": "threshold",
+    "required": true}]'
+  params: null
+type_hint_from_example: false
+utc_time_created: '2026-09-24 10:17:23.673912'

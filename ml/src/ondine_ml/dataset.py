@@ -126,9 +126,9 @@ class Dataset:
 class DatasetBundle:
     """Les trois jeux et l'empreinte des données utilisées (reproductibilité)."""
 
-    train: Dataset
-    valid: Dataset
-    test: Dataset
+    train: Dataset | None
+    valid: Dataset | None
+    test: Dataset | None
     feature_names: list[str]
     categorical: list[str]
     fingerprint: dict[str, object] = field(default_factory=dict)
@@ -245,16 +245,59 @@ def _load_split(
     return dataset
 
 
+def months_between(bounds: tuple[str, str]) -> list[str]:
+    """Liste des mois « AAAA-MM » couverts par des bornes incluses."""
+    first, last = (
+        int(bounds[0][:4]) * 12 + int(bounds[0][5:7]) - 1,
+        int(bounds[1][:4]) * 12 + int(bounds[1][5:7]) - 1,
+    )
+    return [f"{i // 12}-{i % 12 + 1:02d}" for i in range(first, last + 1)]
+
+
+def load_month(
+    settings: Settings,
+    period: str,
+    feature_names: list[str],
+    categories: dict[str, list[str]],
+    seed: int = 42,
+) -> Dataset:
+    """Charge un seul mois, aligné sur les colonnes et catégories du modèle.
+
+    Évaluer mois par mois évite de tenir douze millions de lignes en mémoire d'un coup.
+    """
+    con = connect(settings)
+    try:
+        pattern = gold_pattern(settings)
+        all_columns = [
+            r[0]
+            for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{pattern}')").fetchall()
+        ]
+        columns = sorted(
+            set(c for c in all_columns if c not in EXCLUDED) | set(CONTEXT) | {TARGET, "event_time"}
+        )
+        columns = [c for c in columns if c in all_columns]
+        dataset = _load_split(con, pattern, period, (period, period), columns, 1.0, seed)
+    finally:
+        con.close()
+    dataset.features = dataset.features[feature_names]
+    for column, values in categories.items():
+        dataset.features[column] = dataset.features[column].cat.set_categories(values)
+    return dataset
+
+
 def load(
     settings: Settings,
     split: Split | None = None,
     negative_sampling_rate: float = 0.05,
     seed: int = 42,
+    parts: tuple[str, ...] = ("train", "valid", "test"),
 ) -> DatasetBundle:
-    """Charge les trois jeux depuis la couche gold.
+    """Charge les jeux demandés depuis la couche gold.
 
     `negative_sampling_rate` ne s'applique qu'à l'entraînement : la validation et le test
     gardent toutes les transactions, sinon les métriques ne refléteraient pas la réalité.
+    `parts` permet de ne charger que ce dont on a besoin : sur 50 millions de lignes, garder
+    les trois jeux en mémoire en même temps est inutile et coûteux.
     """
     split = split or Split()
     con = connect(settings)
@@ -270,26 +313,40 @@ def load(
         features = [c for c in all_columns if c not in EXCLUDED]
         columns = sorted(set(features) | set(CONTEXT) | {TARGET, "event_time"})
         columns = [c for c in columns if c in all_columns]
+        loaded = {
+            name: _load_split(
+                con,
+                pattern,
+                name,
+                getattr(split, name),
+                columns,
+                negative_sampling_rate if name == "train" else 1.0,
+                seed,
+            )
+            for name in parts
+        }
         bundle = DatasetBundle(
-            train=_load_split(
-                con, pattern, "train", split.train, columns, negative_sampling_rate, seed
-            ),
-            valid=_load_split(con, pattern, "valid", split.valid, columns, 1.0, seed),
-            test=_load_split(con, pattern, "test", split.test, columns, 1.0, seed),
+            train=loaded.get("train"),
+            valid=loaded.get("valid"),
+            test=loaded.get("test"),
             feature_names=[],
             categorical=[c for c in CATEGORICAL if c in features],
             fingerprint=fingerprint(con, pattern, split),
         )
-        bundle.feature_names = list(bundle.train.features.columns)
+        reference = next(iter(loaded.values()))
+        bundle.feature_names = list(reference.features.columns)
         # Mêmes colonnes et mêmes catégories partout : une catégorie vue à l'entraînement et
         # absente du test doit rester connue du modèle.
-        for dataset in (bundle.valid, bundle.test):
+        others = [
+            d for d in (bundle.train, bundle.valid, bundle.test) if d not in (None, reference)
+        ]
+        for dataset in others:
             dataset.features = dataset.features[bundle.feature_names]
             for column in bundle.categorical:
                 dataset.features[column] = dataset.features[column].cat.set_categories(
-                    bundle.train.features[column].cat.categories
+                    reference.features[column].cat.categories
                 )
-        if bundle.train.target.sum() == 0:
+        if bundle.train is not None and bundle.train.target.sum() == 0:
             raise ValueError(f"Aucune fraude dans le jeu d'entraînement ({split.train})")
         return bundle
     finally:
