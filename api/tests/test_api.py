@@ -294,7 +294,7 @@ def test_threshold_is_recalibrated_to_hold_the_alert_budget(client):
 
     # Trop peu d'observations : on ne bouge pas un seuil sur un quantile qui ne veut rien dire.
     service.store.redis.delete("of:scores")
-    service.recalibrated_at = 0.0
+    service.recalibrated_at = float("-inf")
     stable = service.threshold
     for score in np.linspace(0.0, 1.0, 100):
         service.store.record_score(float(score), service.settings.score_window)
@@ -482,3 +482,35 @@ def test_warming_the_store_gives_the_model_a_real_history(lake, store):
     ages = [compute(t, store.state(t))["device_age_hours_for_client"] for t in transactions]
     assert max(chaud) > 0, "après préchauffage, l'historique de carte existe"
     assert max(a for a in ages if a is not None) > 0, "les appareils ne sont plus tous neufs"
+
+
+def test_a_too_small_window_does_not_postpone_the_next_recalibration(client):
+    """Faute d'observations, le seuil ne bouge pas — mais l'occasion suivante n'est pas perdue.
+
+    Au démarrage, la fenêtre de scores se remplit progressivement. Si un essai infructueux
+    consommait l'intervalle, le seuil resterait figé cinq minutes de plus à chaque fois, et la
+    mise en service commencerait par une longue période où le budget d'alertes n'est pas tenu.
+    """
+    import numpy as np
+    from ondine_api.settings import ApiSettings
+
+    _, service = client
+    service.settings = ApiSettings(
+        redis_url="redis://inutilisé",
+        pseudonymisation_key="clé-de-test",
+        recalibration_interval_s=3600.0,
+        recalibration_min_samples=500,
+    )
+    service.model.alert_budget = 0.01
+    service.recalibrated_at = float("-inf")
+    depart = service.threshold
+
+    for score in np.linspace(0.0, 1.0, 100):  # trop peu : aucun recalage
+        service.store.record_score(float(score), 50_000)
+    service.recalibrate()
+    assert service.threshold == depart
+
+    for score in np.linspace(0.0, 1.0, 900):  # la fenêtre est maintenant suffisante
+        service.store.record_score(float(score), 50_000)
+    service.recalibrate()
+    assert service.threshold != depart, "l'intervalle ne doit pas avoir été consommé à vide"

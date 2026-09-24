@@ -68,6 +68,10 @@ fenêtre : elles convergent sans avoir à se coordonner, et le seuil appliqué e
 | explication (SHAP exacte) | 0,2 ms |
 | **décision complète** | **3,0 ms** (95e centile 5,8 ms, 99e 12,8 ms) |
 
+Mesuré de bout en bout sur 5 000 transactions réelles rejouées par HTTP (`replay`), transport
+compris : **médiane 2,2 ms, 95e centile 2,6 ms, 99e centile 3,0 ms, maximum 15,5 ms**, à
+448 transactions par seconde. Le budget de 100 ms est tenu avec un facteur quarante de marge.
+
 Le budget de 100 ms est vérifié par un test automatisé, et le dépassement est exporté comme
 métrique (`scoring_over_budget_total`) pour être suivi en production.
 

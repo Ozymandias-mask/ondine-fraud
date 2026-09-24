@@ -54,6 +54,7 @@ class ReplayReport:
     blocked: int = 0
     refused: int = 0
     latencies_ms: list[float] = field(default_factory=list)
+    thresholds: list[float] = field(default_factory=list)
     duration_s: float = 0.0
 
     def summary(self) -> dict[str, object]:
@@ -72,6 +73,10 @@ class ReplayReport:
             "latence_p95_ms": round(ordered[int(len(ordered) * 0.95)], 2),
             "latence_p99_ms": round(ordered[int(len(ordered) * 0.99)], 2),
             "latence_max_ms": round(ordered[-1], 2),
+            # Le seuil se recale sur les scores récents : le voir bouger au fil du rejeu est
+            # la démonstration que le budget d'alertes commande, et non une valeur figée.
+            "seuil_initial": round(self.thresholds[0], 6) if self.thresholds else None,
+            "seuil_final": round(self.thresholds[-1], 6) if self.thresholds else None,
         }
 
 
@@ -177,6 +182,7 @@ def replay(url: str, transactions: list[dict], timeout: float = 10.0) -> ReplayR
             continue
         report.sent += 1
         report.blocked += decision["decision"] == "bloquer"
+        report.thresholds.append(decision["seuil"])
         # Latence vue par l'appelant : transport compris, comme pour le système d'autorisation.
         report.latencies_ms.append((time.perf_counter() - begin) * 1000)
     report.duration_s = time.perf_counter() - started

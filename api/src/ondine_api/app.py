@@ -83,7 +83,9 @@ class Service:
     # Seuil réellement appliqué : celui du modèle au démarrage, puis recalé sur les scores
     # récents pour tenir le budget d'alertes.
     threshold: float = 0.5
-    recalibrated_at: float = 0.0
+    # Moins l'infini : la toute première occasion de recaler ne doit pas dépendre de la
+    # valeur qu'affiche l'horloge monotone de la machine au démarrage.
+    recalibrated_at: float = float("-inf")
 
     def load(self) -> None:
         """Charge le modèle promu et ouvre le magasin. Échouer ici évite de servir à vide."""
@@ -112,14 +114,17 @@ class Service:
         now = time.monotonic()
         if self.store is None or now - self.recalibrated_at < settings.recalibration_interval_s:
             return
-        self.recalibrated_at = now
         try:
             scores = self.store.recent_scores(settings.score_window)
         except redis.RedisError as error:
             logger.warning("Seuil non recalé (magasin injoignable) : %s", error)
             return
         if len(scores) < settings.recalibration_min_samples:
-            return  # trop peu d'observations : un quantile extrême n'y voudrait rien dire
+            # Trop peu d'observations : un quantile extrême n'y voudrait rien dire. Le délai
+            # n'est délibérément **pas** consommé : au démarrage, le seuil doit se caler dès
+            # que la fenêtre est assez remplie, sans attendre l'intervalle suivant.
+            return
+        self.recalibrated_at = now
         budget = self.model.alert_budget if self.model else DEFAULT_ALERT_BUDGET
         recalibrated = float(np.quantile(scores, 1 - budget))
         if recalibrated != self.threshold:
