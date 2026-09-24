@@ -301,6 +301,11 @@ def training_summary(result: TrainingResult) -> dict[str, object]:
         "legacy_recall",
         "legacy_cost_total_eur",
         "cost_saving_vs_legacy_eur",
+        # Dérive du seuil : sans ces trois chiffres, un volume d'alertes effondré ressemble
+        # à un mauvais modèle alors que c'est le seuil qui a vieilli.
+        "budget_threshold",
+        "budget_recall",
+        "threshold_drift_ratio",
     )
     summary = asdict(result)
     summary["metrics"] = {
