@@ -15,16 +15,25 @@ authorization_function = mlflow.server.auth:authenticate_request_basic_auth
 INI
 export MLFLOW_AUTH_CONFIG_PATH=/home/mlflow/auth/basic_auth.ini
 
-# MLflow refuse par défaut les requêtes dont l'en-tête Host n'est pas « localhost »
-# (protection contre le DNS rebinding) : les autres conteneurs l'appellent par son nom de
-# service, il faut donc l'autoriser explicitement.
+HELP=$(mlflow server --help 2>/dev/null || true)
+OPTIONS=""
+
+# MLflow 3.16 refuse (403) les requêtes dont l'en-tête Host n'est pas « localhost » :
+# les autres conteneurs appellent le serveur par son nom de service, il faut l'autoriser.
+# L'option est ajoutée seulement si la version installée la connaît.
+case "$HELP" in
+  *--allowed-hosts*) OPTIONS="$OPTIONS --allowed-hosts localhost,127.0.0.1,mlflow,mlflow:5000" ;;
+esac
+# Deux processus suffisent ici et tiennent dans la mémoire allouée au conteneur.
+case "$HELP" in
+  *--workers*) OPTIONS="$OPTIONS --workers 2" ;;
+esac
+
+echo "Démarrage de MLflow avec les options :$OPTIONS"
 exec mlflow server \
   --host 0.0.0.0 --port 5000 \
-  --allowed-hosts "localhost,127.0.0.1,mlflow,mlflow:5000" \
-  --cors-allowed-origins "http://localhost:5001,http://127.0.0.1:5001" \
   --app-name basic-auth \
   --backend-store-uri "postgresql+psycopg2://mlflow:${PG_MLFLOW_PASSWORD}@postgres:5432/mlflow" \
   --artifacts-destination s3://mlflow-artifacts/ \
   --serve-artifacts \
-  --workers 2 \
-  --gunicorn-opts "--timeout 120"
+  $OPTIONS
