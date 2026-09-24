@@ -123,6 +123,9 @@ def _register_routes(application: FastAPI) -> None:
     def sante(request: Request) -> Health:
         """Sonde de vivacité : l'API répond-elle ? (sans dépendance externe)."""
         service: Service = request.app.state.service
+        # Le magasin n'est volontairement pas sollicité ici : une sonde de vivacité qui
+        # dépend d'un service tiers fait redémarrer l'API pour une panne qui n'est pas la
+        # sienne. C'est `/pret` qui vérifie les dépendances.
         return Health(
             statut="en vie",
             modele=service.ml.model_name if service.model else None,

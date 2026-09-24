@@ -75,4 +75,5 @@ class Health(BaseModel):
     modele: str | None = None
     modele_version: str | None = None
     seuil: float | None = None
-    magasin_en_ligne: bool = False
+    # Renseigné par `/pret` seulement : `/sante` ne sollicite aucune dépendance.
+    magasin_en_ligne: bool | None = None
