@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
+import redis
 from ondine_pipelines.lake import connect
 from ondine_pipelines.settings import Settings
 
@@ -105,7 +106,16 @@ def warm_store(settings: Settings, store, transactions: list[dict], days: int = 
             resultat = con.execute(query, [clients, debut, debut])
             colonnes = [d[0] for d in resultat.description]
             for ligne in resultat.fetchall():
-                recorder(dict(zip(colonnes, ligne, strict=True)))
+                try:
+                    recorder(dict(zip(colonnes, ligne, strict=True)))
+                except redis.exceptions.OutOfMemoryError as error:
+                    raise RuntimeError(
+                        "Le magasin en ligne est plein : il conserve 30 jours d'historique et"
+                        " sa mémoire est dimensionnée pour cela (voir `redis` dans"
+                        " docker-compose.yml). Augmentez `--maxmemory`, ou rejouez moins de"
+                        " transactions. Aucune donnée n'est évincée silencieusement : c'est"
+                        " délibéré, un historique amputé fausserait les variables du modèle."
+                    ) from error
                 lus[cle] += 1
     finally:
         con.close()

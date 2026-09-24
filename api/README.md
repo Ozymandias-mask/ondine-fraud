@@ -71,6 +71,17 @@ fenêtre : elles convergent sans avoir à se coordonner, et le seuil appliqué e
 Le budget de 100 ms est vérifié par un test automatisé, et le dépassement est exporté comme
 métrique (`scoring_over_budget_total`) pour être suivi en production.
 
+## Dimensionnement du magasin en ligne
+
+Le magasin conserve 30 jours d'historique par client et par carte, et 8 jours d'événements
+applicatifs — c'est ce qu'exigent les fenêtres du modèle. À 4,6 millions de transactions par
+mois, cela représente environ 9 millions d'entrées, soit **1,5 Gio** ; 3 Gio sont alloués
+pour absorber les pics.
+
+L'éviction est **désactivée** (`noeviction`) et c'est délibéré : perdre silencieusement de
+l'historique fausserait les variables du modèle sans que rien ne le signale. Mieux vaut une
+écriture en erreur, visible et corrigeable, que des décisions prises sur des données amputées.
+
 ## Disponibilité et erreurs
 
 | Incident | Comportement |

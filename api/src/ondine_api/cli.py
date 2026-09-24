@@ -55,6 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     rejeu.add_argument("--limit", type=int, default=5000, help="nombre de transactions")
     rejeu.add_argument("--url", default="http://scoring-api:8000", help="adresse de l'API")
     rejeu.add_argument(
+        "--flush",
+        action="store_true",
+        help="vider le magasin avant de rejouer (démonstration reproductible)",
+    )
+    rejeu.add_argument(
         "--no-warmup",
         action="store_true",
         help="ne pas préchauffer le magasin (scores non représentatifs)",
@@ -78,13 +83,16 @@ def main(argv: list[str] | None = None) -> int:
 
         pipelines = Settings.from_env()
         transactions = read_transactions(pipelines, args.month, args.limit)
-        if not args.no_warmup:
+        if args.flush or not args.no_warmup:
             api = ApiSettings.from_env()
-            warm_store(
-                pipelines,
-                OnlineStore.from_url(api.redis_url, api.pseudonymisation_key),
-                transactions,
-            )
+            magasin = OnlineStore.from_url(api.redis_url, api.pseudonymisation_key)
+            if args.flush:
+                # Uniquement pour rendre une démonstration reproductible : en production le
+                # magasin n'est jamais vidé, il se renouvelle par ses durées de vie.
+                logger.warning("Magasin en ligne vidé avant le rejeu.")
+                magasin.redis.flushdb()
+            if not args.no_warmup:
+                warm_store(pipelines, magasin, transactions)
         logger.info("%d transactions lues, envoi à %s", len(transactions), args.url)
         report = replay(args.url, transactions)
         print(json.dumps(report.summary(), indent=2, ensure_ascii=False))

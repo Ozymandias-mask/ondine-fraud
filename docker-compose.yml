@@ -552,9 +552,15 @@ services:
     restart: unless-stopped
     logging: *default-logging
     networks: [ondine]
+    # Dimensionnement : le magasin conserve 30 jours d'historique client et de carte, plus
+    # 8 jours d'événements. À 4,6 millions de transactions par mois, cela représente environ
+    # 9 millions d'entrées et 1,5 Gio ; 3 Gio laissent la marge nécessaire aux pics.
+    # `noeviction` est délibéré : perdre silencieusement de l'historique fausserait les
+    # variables du modèle sans que rien ne le signale. Mieux vaut une écriture en erreur,
+    # visible, que des décisions prises sur des données amputées.
     command: >
       redis-server --appendonly yes --appendfsync everysec
-      --maxmemory 1gb --maxmemory-policy noeviction
+      --maxmemory 3gb --maxmemory-policy noeviction
     volumes: ["redis-data:/data"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -564,7 +570,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1500M
+          memory: 3500M
 
   scoring-api:
     build: {context: ., dockerfile: api/Dockerfile}
