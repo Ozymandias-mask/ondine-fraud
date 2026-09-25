@@ -558,10 +558,15 @@ services:
     # `noeviction` est délibéré : perdre silencieusement de l'historique fausserait les
     # variables du modèle sans que rien ne le signale. Mieux vaut une écriture en erreur,
     # visible, que des décisions prises sur des données amputées.
+    # Aucune persistance, délibérément : le magasin en ligne est un **état dérivé**. Il se
+    # reconstruit depuis le flux Kafka, qui conserve les messages, et depuis le lac. Écrire
+    # un journal n'apporte donc aucune garantie — mais au redémarrage, le rejouer prend
+    # plusieurs minutes et fait pointer la mémoire au-dessus de la limite du conteneur avant
+    # la purge : le magasin ne redémarrait plus. Redis démarre maintenant vide en une
+    # seconde, et se remplit à nouveau par le flux.
     command: >
-      redis-server --appendonly yes --appendfsync everysec
+      redis-server --appendonly no --save ""
       --maxmemory 3gb --maxmemory-policy noeviction
-    volumes: ["redis-data:/data"]
     healthcheck:
       # `redis-cli ping` répond aussi pendant le chargement du journal (« LOADING ») : seul
       # un vrai PONG signale un magasin utilisable. Au redémarrage, rejouer trente jours
@@ -811,7 +816,6 @@ networks:
     name: ondine
 
 volumes:
-  redis-data:
   mlflow-auth:
   kafka-1-data:
   kafka-2-data:

@@ -86,6 +86,15 @@ L'éviction est **désactivée** (`noeviction`) et c'est délibéré : perdre si
 l'historique fausserait les variables du modèle sans que rien ne le signale. Mieux vaut une
 écriture en erreur, visible et corrigeable, que des décisions prises sur des données amputées.
 
+La **persistance**, elle, est désactivée — pour la raison inverse. Le magasin est un état
+*dérivé* : il se reconstruit depuis le flux Kafka, qui conserve les messages, et depuis le
+lac. Un journal d'écritures n'apporterait donc aucune garantie supplémentaire, mais au
+redémarrage le rejouer prend plusieurs minutes et fait pointer la mémoire au-dessus de la
+limite du conteneur avant la purge — le magasin ne redémarrait plus. Il démarre désormais
+vide en une seconde et se remplit à nouveau par le flux. Le seul effet visible est une
+période de chauffe après un redémarrage, pendant laquelle les variables d'historique sont
+incomplètes ; c'est ce que le préchauffage de `replay` reconstitue pour une démonstration.
+
 ## Disponibilité et erreurs
 
 | Incident | Comportement |
