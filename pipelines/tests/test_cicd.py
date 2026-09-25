@@ -81,7 +81,11 @@ def test_the_workflows_use_a_shell_the_production_machine_actually_has():
         texte = fichier.read_text(encoding="utf-8")
         assert "shell: bash" not in texte and "shell: pwsh" not in texte, fichier.name
         flux = yaml.safe_load(texte)
-        assert flux["defaults"]["run"]["shell"] == "powershell", fichier.name
+        shell = flux["defaults"]["run"]["shell"]
+        assert shell.startswith("powershell "), fichier.name
+        # La règle d'exécution par défaut d'un poste Windows interdit de lancer un fichier
+        # de script, et le runner en écrit un par étape.
+        assert "-ExecutionPolicy Bypass" in shell, fichier.name
     assert "Git\\bin\\bash.exe" in (FLUX / "cd.yml").read_text(encoding="utf-8")
 
 
