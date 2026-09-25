@@ -22,10 +22,17 @@ concurrency:
   group: cd-production
   cancel-in-progress: false
 
-# La machine de production est sous Windows. Deux pièges s'y cachent : `bash` y désigne celui
-# de WSL, qui ne sait pas lire les chemins que le runner lui passe, et `pwsh` (PowerShell 7)
-# n'est pas installé. Les étapes tournent donc sous le PowerShell livré avec Windows, et les
-# rares scripts en shell sont appelés explicitement par le bash de Git.
+# La machine de production est sous Windows, ce qui impose trois précautions.
+#
+# `bash` y désigne celui de WSL, qui ne sait pas lire les chemins que le runner lui passe, et
+# `pwsh` (PowerShell 7) n'est pas installé : les étapes tournent donc sous le PowerShell livré
+# avec le système, et les rares scripts en shell sont appelés explicitement par le bash de Git.
+#
+# Surtout, GitHub exécute ces étapes avec `$ErrorActionPreference = 'Stop'` : **la moindre
+# ligne écrite sur la sortie d'erreur par un programme externe interrompt l'étape**. Or
+# `docker compose` y écrit son avancement et ses avertissements. Chaque bloc rétablit donc
+# `Continue`, et vérifie explicitement le code de sortie — ce qui est de toute façon la bonne
+# façon de savoir si une commande a échoué.
 defaults:
   run:
     shell: powershell
@@ -53,6 +60,7 @@ jobs:
       # sans que son contenu n'apparaisse jamais dans les journaux.
       - name: Secrets d'exploitation
         run: |
+          $ErrorActionPreference = 'Continue'
           $source = Join-Path $env:ONDINE_INSTALL '.env'
           if (-not (Test-Path $source)) {
             Write-Output "::error::.env introuvable dans $env:ONDINE_INSTALL"
@@ -64,6 +72,7 @@ jobs:
         env:
           ONDINE_BUILD: ${{ github.sha }}
         run: |
+          $ErrorActionPreference = 'Continue'
           # Le déploiement est un script shell et non du YAML : on doit pouvoir le lire, le
           # relancer et le déboguer sans passer par l'orchestrateur. Sur cette machine
           # Windows, `bash` désigne celui de WSL — on appelle donc explicitement celui de Git.
@@ -75,11 +84,13 @@ jobs:
       - name: Effacement des secrets de l'espace de travail
         if: always()
         run: |
+          $ErrorActionPreference = 'Continue'
           Remove-Item '.env' -Force -ErrorAction SilentlyContinue
           exit 0
 
       - name: Version en service
         run: |
+          $ErrorActionPreference = 'Continue'
           $sante = curl.exe -fsS http://localhost:8010/sante
           # `>>` écrit en UTF-16 sous Windows PowerShell : le résumé serait illisible.
           "### Version en service`n`n``````json`n$sante`n``````" |

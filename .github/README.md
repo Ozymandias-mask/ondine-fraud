@@ -95,8 +95,16 @@ Deux pièges rencontrés, qui valent d'être connus :
   le bash de Git.
 - **`shell: pwsh` n'existe pas** sur une installation Windows standard : `pwsh` est
   PowerShell 7, qui s'installe séparément. Seul `powershell` (5.1, livré avec le système) est
-  garanti. Les deux pièges échouent de la même façon : le flux démarre, puis l'étape s'arrête
-  en quelques secondes sans message exploitable.
+  garanti.
+- **GitHub exécute les étapes PowerShell avec `$ErrorActionPreference = 'Stop'`**, ce qui fait
+  qu'une simple ligne écrite sur la sortie d'erreur par un programme externe interrompt
+  l'étape. `docker compose` y écrit son avancement et ses avertissements : l'étape échouait en
+  0,3 s alors que la commande, relancée à la main, réussissait. Chaque bloc rétablit
+  `Continue` et vérifie explicitement `$LASTEXITCODE`.
+
+Les trois pièges échouent de la même façon : le flux démarre, donc tout semble en place, puis
+l'étape s'arrête en quelques secondes sans message exploitable. C'est ce qui rend la première
+mise en place d'un runner auto-hébergé plus longue qu'elle n'en a l'air.
 - **Ne pas installer le runner en service** sur ce poste : le service tourne sous
   `NT AUTHORITY\NETWORK SERVICE`, qui n'a pas accès à Docker Desktop. Il est lancé au premier
   plan (`.\run.cmd`), ce qui a l'avantage de rendre les exécutions visibles pendant une

@@ -19,10 +19,17 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# La machine de production est sous Windows. Deux pièges s'y cachent : `bash` y désigne celui
-# de WSL, qui ne sait pas lire les chemins que le runner lui passe, et `pwsh` (PowerShell 7)
-# n'est pas installé. Les étapes tournent donc sous le PowerShell livré avec Windows, et les
-# rares scripts en shell sont appelés explicitement par le bash de Git.
+# La machine de production est sous Windows, ce qui impose trois précautions.
+#
+# `bash` y désigne celui de WSL, qui ne sait pas lire les chemins que le runner lui passe, et
+# `pwsh` (PowerShell 7) n'est pas installé : les étapes tournent donc sous le PowerShell livré
+# avec le système, et les rares scripts en shell sont appelés explicitement par le bash de Git.
+#
+# Surtout, GitHub exécute ces étapes avec `$ErrorActionPreference = 'Stop'` : **la moindre
+# ligne écrite sur la sortie d'erreur par un programme externe interrompt l'étape**. Or
+# `docker compose` y écrit son avancement et ses avertissements. Chaque bloc rétablit donc
+# `Continue`, et vérifie explicitement le code de sortie — ce qui est de toute façon la bonne
+# façon de savoir si une commande a échoué.
 defaults:
   run:
     shell: powershell
@@ -40,6 +47,7 @@ jobs:
       # ne le garantirait pas, et c'est précisément là que se cachent les écarts.
       - name: Construction de l'image de test
         run: |
+          $ErrorActionPreference = 'Continue'
           docker compose --profile pipelines build pipelines-cli
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           docker compose --profile ci build tests
@@ -47,6 +55,7 @@ jobs:
 
       - name: Style et erreurs probables (ruff)
         run: |
+          $ErrorActionPreference = 'Continue'
           docker compose --profile ci run --rm --no-deps --entrypoint ruff tests check .
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           docker compose --profile ci run --rm --no-deps --entrypoint ruff tests format --check .
@@ -54,6 +63,7 @@ jobs:
 
       - name: Configuration de la plateforme
         run: |
+          $ErrorActionPreference = 'Continue'
           docker compose config --quiet
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           docker run --rm -v "${{ github.workspace }}/infra/prometheus:/regles:ro" `
@@ -66,12 +76,14 @@ jobs:
       # les données de production.
       - name: Tests automatisés
         run: |
+          $ErrorActionPreference = 'Continue'
           docker compose --profile ci run --rm tests
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Arrêt de la base jetable
         if: always()
         run: |
+          $ErrorActionPreference = 'Continue'
           docker compose --profile ci down --volumes --remove-orphans postgres-ci
           exit 0
 
@@ -84,6 +96,7 @@ jobs:
 
       - name: Construction de l'image de service
         run: |
+          $ErrorActionPreference = 'Continue'
           docker compose --profile api build scoring-api
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
@@ -93,6 +106,7 @@ jobs:
       # corriger, et plus personne ne la regarderait.
       - name: Analyse Trivy (image de service)
         run: |
+          $ErrorActionPreference = 'Continue'
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock `
             aquasec/trivy:0.69.1 image --scanners vuln --severity CRITICAL `
             --exit-code 1 --ignore-unfixed --no-progress ondine/api:local
@@ -102,6 +116,7 @@ jobs:
       # chaque modification, sur l'historique complet.
       - name: Recherche de secrets commis
         run: |
+          $ErrorActionPreference = 'Continue'
           docker run --rm -v "${{ github.workspace }}:/depot:ro" `
             zricethezav/gitleaks:v8.30.1 detect --source /depot --no-banner --redact
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

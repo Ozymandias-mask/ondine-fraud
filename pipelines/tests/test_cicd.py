@@ -85,6 +85,26 @@ def test_the_workflows_use_a_shell_the_production_machine_actually_has():
     assert "Git\\bin\\bash.exe" in (FLUX / "cd.yml").read_text(encoding="utf-8")
 
 
+def test_a_warning_on_standard_error_does_not_kill_a_step():
+    """GitHub exécute les étapes PowerShell avec `$ErrorActionPreference = 'Stop'`.
+
+    La moindre ligne écrite sur la sortie d'erreur par un programme externe interrompt alors
+    l'étape — et `docker compose` y écrit son avancement et ses avertissements. L'étape échoue
+    en une fraction de seconde, sans que rien n'ait réellement échoué. Chaque bloc rétablit
+    donc `Continue` et vérifie explicitement le code de sortie.
+    """
+    for fichier in sorted(FLUX.glob("*.yml")):
+        flux = yaml.safe_load(fichier.read_text(encoding="utf-8"))
+        for job in flux["jobs"].values():
+            for etape in job["steps"]:
+                script = etape.get("run")
+                if script is None:
+                    continue
+                assert "$ErrorActionPreference = 'Continue'" in script, (
+                    f"{fichier.name} / {etape.get('name', '?')}"
+                )
+
+
 def test_the_tests_never_run_against_the_production_database():
     """Les tests créent et suppriment des bases entières : jamais sur celle des données."""
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
