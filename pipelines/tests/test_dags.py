@@ -18,6 +18,7 @@ def test_dags_load_without_errors():
         "ondine_lake_refresh",
         "ondine_governance",
         "ondine_retention",
+        "ondine_model_refresh",
     }
     for dag in bag.dags.values():
         assert dag.max_active_runs == 1 and not dag.catchup

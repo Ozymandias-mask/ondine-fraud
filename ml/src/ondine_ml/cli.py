@@ -50,6 +50,13 @@ def main(argv: list[str] | None = None) -> int:
     report_cmd = sub.add_parser("report", help="Affiche les rapports détaillés d'un modèle")
     report_cmd.add_argument("--alias", default="challenger")
     report_cmd.add_argument("--name", default="", help="Filtre sur le nom du rapport")
+    drift_cmd = sub.add_parser(
+        "drift", help="Mesure la dérive du modèle en service et dit s'il faut réentraîner"
+    )
+    drift_cmd.add_argument("--alias", default="champion")
+    drift_cmd.add_argument(
+        "--month", default="", help="Mois à confronter (défaut : le dernier mois gold disponible)"
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -79,6 +86,14 @@ def main(argv: list[str] | None = None) -> int:
             from .promote import metrics_of
 
             print(json.dumps(metrics_of(ml, args.alias), indent=2, ensure_ascii=False))
+        elif args.command == "drift":
+            from .drift import measure, publish, record
+
+            report = measure(settings, ml, args.alias, args.month, settings.pg_dsn)
+            record(settings.pg_dsn, report)
+            publish(settings, report)
+            print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+            return 0 if not report.retrain else 3
         elif args.command == "report":
             from .promote import report_of
 

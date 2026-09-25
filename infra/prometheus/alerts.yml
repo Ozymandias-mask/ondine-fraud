@@ -131,3 +131,32 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Aucun contrôle de gouvernance (droits, accès anormaux) depuis plus d'une heure"
+
+  - name: modele
+    rules:
+      - alert: DeriveModeleAveree
+        expr: model_drift_detected > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "Modèle {{ $labels.model_version }} : dérive avérée, réentraînement déclenché"
+          description: "Voir ops.model_drift (dernière ligne) pour les motifs : scores déplacés, variables dérivées, budget d'alertes ou retours analystes."
+
+      - alert: DeriveModeleASurveiller
+        expr: model_drift_watch > 0 and model_drift_detected == 0
+        for: 3d
+        labels: {severity: warning}
+        annotations:
+          summary: "Modèle {{ $labels.model_version }} : dérive au seuil de surveillance depuis 3 jours"
+
+      - alert: PromotionAutomatiqueRefusee
+        expr: model_promotion_success == 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Le candidat réentraîné n'a pas passé les critères de mise en service"
+          description: "Le champion en place reste servi. Motifs du refus : étiquette promotion_refusee sur la version dans MLflow."
+
+      - alert: SurveillanceModeleArretee
+        expr: time() - max(model_drift_timestamp_seconds) > 172800
+        labels: {severity: warning}
+        annotations:
+          summary: "Aucune mesure de dérive du modèle depuis plus de 48 h : la surveillance est arrêtée"

@@ -137,6 +137,63 @@ Réglages utiles (variables d'environnement) : `ONDINE_ML_TRAIN`, `ONDINE_ML_VAL
 `ONDINE_ML_TEST` (bornes « AAAA-MM..AAAA-MM »), `ONDINE_ML_NEGATIVE_RATE`,
 `ONDINE_ML_ALERT_BUDGET`, `ONDINE_ML_SEED`.
 
+## Dérive et réentraînement automatique
+
+Un modèle de fraude se périme plus vite que la plupart : les fraudeurs changent de mode
+opératoire **parce qu'**ils sont détectés. Entre deux interventions humaines, c'est le DAG
+`ondine_model_refresh` (chaque nuit à 2 h) qui empêche la solution de se dégrader en silence.
+
+### Ce qui est mesuré
+
+| Signal | Comment | Délai | Ce qu'il vaut |
+|---|---|---|---|
+| Variables entrantes | PSI par variable, gold récent contre période de référence | immédiat | alerte tôt, ne prouve rien : une population peut changer sans gêner le modèle |
+| Distribution des scores | PSI sur les probabilités rendues | immédiat | c'est ce qui casse le seuil, donc le budget d'alertes, avant que la qualité ne baisse |
+| Qualité | AUC-PR, rappel et précision sur les fraudes désormais confirmées | quelques semaines | certain, mais trop tardif pour déclencher seul |
+| Retours analystes | part des alertes écartées (`ops.alerts`) | quelques heures | ne dit rien du rappel, mais une précision effondrée suffit à déclencher |
+
+L'indicateur est l'**indice de stabilité de population** (PSI) : il compare deux distributions
+intervalle par intervalle, ne suppose aucune forme, et ses seuils d'usage sont connus
+(0,10 : à surveiller ; 0,25 : dérive avérée). Pas de bibliothèque supplémentaire pour dix
+lignes d'arithmétique — une dépendance de moins à tenir à jour dans une image de production.
+
+```powershell
+docker compose --profile ml run --rm ml-cli drift          # code de sortie 3 = dérive avérée
+```
+
+Chaque mesure est écrite dans `ops.model_drift` (avec son détail en JSON) et publiée vers
+Prometheus, **qu'il y ait dérive ou non** : c'est la série qui distingue un mois atypique
+(soldes, fêtes) d'une usure qui s'installe, et qui justifie après coup pourquoi le
+réentraînement a été déclenché ce jour-là. Alertes : `DeriveModeleAveree`,
+`DeriveModeleASurveiller`, `PromotionAutomatiqueRefusee`, `SurveillanceModeleArretee`.
+
+### Ce qui se passe ensuite
+
+1. **décider** — on réentraîne si la dérive est avérée, **ou** si le champion a plus de 31
+   jours. Les indicateurs de dérive sont des indices, pas des preuves ; un modèle qui n'a pas
+   vu le mois écoulé est déjà en retard. Sinon le DAG s'arrête, sans brûler une heure de
+   calcul ;
+2. **entraîner** — sur un découpage qui **avance avec les données** : le test reste les trois
+   derniers mois connus, la validation le mois d'avant, l'entraînement tout ce qui précède.
+   Un réentraînement qui rejouerait les bornes de la configuration réapprendrait indéfiniment
+   sur 2025 et produirait le même modèle ;
+3. **comparer** — le champion est **réévalué sur la période du candidat**. Sans cela on
+   comparerait deux modèles sur deux mois différents, ce qui ne prouve rien ;
+4. **promouvoir** — les mêmes critères écrits qu'en manuel. Un refus n'est pas une erreur :
+   le candidat reste `challenger`, le motif est inscrit sur la version dans MLflow et une
+   métrique le signale. **Aucune dérogation n'est possible ici** : passer outre un critère est
+   une décision humaine, nommée et datée.
+
+### Reproductibilité
+
+Graine fixe (`ONDINE_ML_SEED`), sous-échantillonnage par hachage, empreinte SHA-256 des
+fichiers gold lus, versions des bibliothèques et bornes du découpage : tout est enregistré
+dans MLflow avec le modèle. Le motif du réentraînement y est attaché comme étiquette
+(`declencheur`) — dans six mois, « pourquoi cette version existe-t-elle ? » a une réponse.
+Un test vérifie que le découpage roulant appliqué au dernier mois d'origine **reproduit
+exactement** le découpage d'origine : la mise à jour automatique n'est pas un autre protocole,
+c'est le même, appliqué plus tard.
+
 ## Organisation du code
 
 ```
@@ -146,8 +203,10 @@ ml/src/ondine_ml/
 ├── train.py      entraînement, évaluation complète, enregistrement MLflow
 ├── evaluate.py   métriques, coût métier, seuils, équité, robustesse, dérive
 ├── explain.py    SHAP global et local, formulation lisible par un analyste
+├── drift.py      dérive des variables, des scores et de la qualité ; verdict et traçabilité
+├── promote.py    critères de mise en service, dérogation tracée, retour arrière
 ├── serving.py    chargement d'un modèle du registre (par alias), usages hors ligne
-└── cli.py        ondine-ml train | evaluate | explain
+└── cli.py        ondine-ml train | evaluate | explain | metrics | report | drift | promote | rollback
 ```
 
 ## Tests

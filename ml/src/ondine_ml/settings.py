@@ -66,6 +66,35 @@ class MlSettings:
             fairness_margin=value("ONDINE_ML_FAIRNESS_MARGIN", cls.fairness_margin),
         )
 
+    def rolling(self, latest: str, test_months: int = 3) -> MlSettings:
+        """Mêmes réglages, mais avec un découpage temporel qui finit au mois donné.
+
+        Un réentraînement automatique qui rejouerait les bornes gravées dans la configuration
+        réapprendrait indéfiniment sur 2025 : il produirait un modèle identique et ne servirait
+        à rien. Les bornes avancent donc avec les données — le test reste les derniers mois
+        connus, la validation le mois qui les précède, l'entraînement tout ce qui est avant.
+        L'ordre chronologique est conservé : aucun mois du test n'entre dans l'apprentissage.
+        """
+        from dataclasses import replace
+
+        def month(offset: int) -> str:
+            index = int(latest[:4]) * 12 + int(latest[5:7]) - 1 + offset
+            return f"{index // 12}-{index % 12 + 1:02d}"
+
+        first = self.train_bounds.split("..")[0].strip()
+        test_start, valid = month(1 - test_months), month(-test_months)
+        if valid <= first:
+            raise ValueError(
+                f"Historique insuffisant pour un découpage finissant en {latest} :"
+                f" l'entraînement commencerait après sa validation ({first} > {valid})."
+            )
+        return replace(
+            self,
+            train_bounds=f"{first}..{month(-test_months - 1)}",
+            valid_bounds=f"{valid}..{valid}",
+            test_bounds=f"{test_start}..{latest}",
+        )
+
     def split(self) -> Split:
         """Découpage temporel demandé (bornes « AAAA-MM..AAAA-MM »)."""
 

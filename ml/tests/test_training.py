@@ -216,6 +216,7 @@ def test_every_command_of_the_cli_runs(trained, ml_settings, lake, monkeypatch):
         )
         == 0
     )
+    assert main(["drift", "--alias", "challenger", "--month", "2025-04"]) in (0, 3)
     assert main(["rollback"]) in (0, 2)
 
 
@@ -287,3 +288,87 @@ def test_a_derogation_is_recorded_in_the_governance_register(trained, ml_setting
     assert "4/5" in ligne[0] and ligne[2] == "Dir. risques" and ligne[3] == "ouverte"
     assert ligne[4] is False, "l'échéance de réexamen court encore"
     assert tracee >= 1, "la décision doit aussi apparaître au journal d'audit"
+
+
+def test_psi_flags_a_moved_distribution_and_stays_quiet_otherwise():
+    """L'indicateur de dérive doit ignorer le bruit d'échantillonnage et voir un vrai décalage.
+
+    Un détecteur qui crie à chaque tirage déclencherait un réentraînement par nuit ; un
+    détecteur sourd laisserait le modèle se dégrader jusqu'à ce qu'un analyste s'en aperçoive.
+    """
+    import numpy as np
+    from ondine_ml.drift import PSI_DRIFT, PSI_WATCH, psi
+
+    generateur = np.random.default_rng(7)
+    reference = generateur.normal(size=50_000)
+
+    # Deux tirages de la même loi : aucune dérive.
+    assert psi(reference, generateur.normal(size=50_000)) < PSI_WATCH
+    # Population déplacée d'un écart-type : dérive avérée.
+    assert psi(reference, generateur.normal(loc=1.0, size=50_000)) > PSI_DRIFT
+    # Une grandeur constante n'a pas de distribution à comparer : indice nul, pas d'erreur.
+    assert psi(np.zeros(1000), np.zeros(1000)) == 0.0
+    # Un intervalle qui se vide ne fait pas partir l'indice à l'infini.
+    assert np.isfinite(psi(reference, generateur.normal(loc=8.0, size=50_000)))
+
+
+def test_the_training_window_advances_with_the_data(ml_settings):
+    """Le réentraînement automatique doit apprendre sur des données neuves, pas sur 2025.
+
+    Le découpage roulant reproduit exactement celui d'origine quand on lui donne le dernier
+    mois d'origine : la mise à jour automatique n'est pas un autre modèle, c'est le même
+    protocole appliqué plus tard.
+    """
+    from ondine_ml.settings import MlSettings
+
+    origine = MlSettings()
+    assert origine.rolling("2025-12").split() == origine.split()
+
+    avance = origine.rolling("2026-03")
+    assert avance.test_bounds == "2026-01..2026-03"
+    assert avance.valid_bounds == "2025-12..2025-12"
+    assert avance.train_bounds == "2025-01..2025-11"
+    # Aucun mois du test ne doit se retrouver dans l'apprentissage.
+    assert avance.split().train[1] < avance.split().valid[0] < avance.split().test[0]
+
+    with pytest.raises(ValueError, match="Historique insuffisant"):
+        origine.rolling("2025-04")
+
+    # Le découpage des tests (2 mois d'apprentissage) reste cohérent une fois avancé.
+    assert ml_settings.rolling("2025-05", test_months=1).test_bounds == "2025-05..2025-05"
+
+
+def test_drift_is_measured_against_the_period_the_champion_was_validated_on(
+    trained, ml_settings, lake
+):
+    """La dérive compare le champion à sa propre période de référence, et garde la trace.
+
+    Sans historique écrit, une mesure isolée ne distingue pas un mois atypique d'une usure qui
+    s'installe — et rien ne justifierait, après coup, le réentraînement déclenché ce jour-là.
+    """
+    import psycopg
+    from ondine_ml.drift import PSI_DRIFT, measure, record
+    from ondine_ml.promote import promote
+
+    promote(ml_settings)  # il faut un champion pour mesurer sa dérive
+
+    rapport = measure(lake, ml_settings, "champion", current="2025-04", dsn=lake.pg_dsn)
+    assert rapport.reference == ml_settings.test_bounds
+    assert rapport.current == "2025-04"
+    assert rapport.verdict in ("stable", "surveiller", "derive")
+    assert rapport.reasons, "un verdict sans motif est indébogable"
+    assert rapport.feature_psi, "les variables les plus dérivées doivent être nommées"
+    assert rapport.retrain == (rapport.verdict == "derive")
+    assert "model_drift_score_psi" in rapport.gauges()
+
+    record(lake.pg_dsn, rapport)
+    with psycopg.connect(lake.pg_dsn) as connection:
+        ligne = connection.execute(
+            "SELECT verdict, score_psi, details FROM ops.model_drift ORDER BY drift_id DESC LIMIT 1"
+        ).fetchone()
+    assert ligne[0] == rapport.verdict
+    assert ligne[2]["current"] == "2025-04"
+
+    # Le même mois que la référence ne peut pas dériver de lui-même : garde-fou du calcul.
+    identique = measure(lake, ml_settings, "champion", current=ml_settings.test_bounds[:7])
+    assert identique.score_psi < PSI_DRIFT

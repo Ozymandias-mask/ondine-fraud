@@ -203,6 +203,7 @@ def promote(
     candidate_alias: str = CANDIDATE_ALIAS,
     derogation: Derogation | None = None,
     dsn: str = "",
+    champion_metrics: dict[str, float] | None = None,
 ) -> Decision:
     """Promeut le candidat s'il passe les critères. Ne fait rien, et dit pourquoi, sinon.
 
@@ -218,7 +219,13 @@ def promote(
     if champion is not None and champion.version == candidate.version:
         return Decision(True, candidate.version, champion.version, ["déjà en service"], {})
 
-    candidate_metrics, champion_metrics = _metrics(client, candidate), _metrics(client, champion)
+    candidate_metrics = _metrics(client, candidate)
+    # Le champion a été évalué sur *sa* période de test. Quand le réentraînement automatique
+    # fait avancer le découpage, comparer les deux coûts reviendrait à comparer deux mois
+    # différents : l'appelant réévalue alors le champion sur la période du candidat et passe
+    # ces chiffres-là.
+    if champion_metrics is None:
+        champion_metrics = _metrics(client, champion)
     reasons = check(candidate_metrics, champion_metrics, ml)
     if reasons and derogation is not None:
         if dsn:
