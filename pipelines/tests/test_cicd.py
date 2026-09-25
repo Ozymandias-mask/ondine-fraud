@@ -60,10 +60,30 @@ def test_secrets_never_enter_the_repository():
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").split()
     assert ".env" in ignore
     assert not (ROOT / ".env").exists() or ".env" in ignore
-    # Le flux vérifie la présence du fichier de secrets sans jamais l'afficher.
+    # Les secrets viennent de la machine de production, le temps du déploiement seulement,
+    # et sont effacés de l'espace de travail quelle que soit l'issue.
     livraison = (FLUX / "cd.yml").read_text(encoding="utf-8")
-    assert "test -s .env" in livraison
-    assert "cat .env" not in livraison
+    assert "vars.ONDINE_INSTALL" in livraison
+    assert "Copy-Item $source '.env'" in livraison
+    assert "Remove-Item '.env'" in livraison
+    assert "if: always()" in livraison, "un secret laissé sur disque après un échec"
+    assert "cat .env" not in livraison and "Get-Content" not in livraison
+
+
+def test_no_step_relies_on_bash_being_git_bash():
+    """`shell: bash` désigne celui de WSL sur la machine de production, pas celui de Git.
+
+    Le piège est silencieux : le flux démarre, puis chaque étape échoue sans message
+    exploitable parce que WSL ne sait pas lire les chemins Windows que le runner lui passe.
+    Les étapes sont donc en PowerShell, et le script de déploiement appelle explicitement
+    le bash de Git.
+    """
+    for fichier in sorted(FLUX.glob("*.yml")):
+        texte = fichier.read_text(encoding="utf-8")
+        assert "shell: bash" not in texte, fichier.name
+        flux = yaml.safe_load(texte)
+        assert flux["defaults"]["run"]["shell"] == "pwsh", fichier.name
+    assert "Git\\bin\\bash.exe" in (FLUX / "cd.yml").read_text(encoding="utf-8")
 
 
 def test_the_tests_never_run_against_the_production_database():

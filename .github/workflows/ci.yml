@@ -19,6 +19,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# La machine d'intégration est sous Windows. `bash` y désigne celui de WSL, qui ne sait pas
+# lire les chemins que le runner lui passe : toutes les étapes sont donc en PowerShell, et
+# les rares scripts en shell sont appelés explicitement par celui de Git (voir `cd.yml`).
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   qualite:
     name: Style, tests et configuration
@@ -31,36 +38,41 @@ jobs:
       # qu'en production. Un environnement Python reconstruit sur la machine d'intégration
       # ne le garantirait pas, et c'est précisément là que se cachent les écarts.
       - name: Construction de l'image de test
-        shell: bash
         run: |
           docker compose --profile pipelines build pipelines-cli
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           docker compose --profile ci build tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Style et erreurs probables (ruff)
-        shell: bash
         run: |
           docker compose --profile ci run --rm --no-deps --entrypoint ruff tests check .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           docker compose --profile ci run --rm --no-deps --entrypoint ruff tests format --check .
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Configuration de la plateforme
-        shell: bash
         run: |
           docker compose config --quiet
-          docker run --rm -v "$PWD/infra/prometheus:/regles:ro" \
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          docker run --rm -v "${{ github.workspace }}/infra/prometheus:/regles:ro" `
             --entrypoint promtool prom/prometheus:v3.14.0 check rules /regles/alerts.yml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # Les tests construisent de vraies données avec le simulateur, les font passer par les
       # vrais traitements jusqu'à la couche gold, entraînent un modèle et vérifient l'API.
       # La base est jetable et en mémoire : l'intégration ne touche jamais celle qui porte
       # les données de production.
       - name: Tests automatisés
-        shell: bash
-        run: docker compose --profile ci run --rm tests
+        run: |
+          docker compose --profile ci run --rm tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - name: Arrêt de la base jetable
         if: always()
-        shell: bash
-        run: docker compose --profile ci down --volumes --remove-orphans postgres-ci || true
+        run: |
+          docker compose --profile ci down --volumes --remove-orphans postgres-ci
+          exit 0
 
   securite:
     name: Vulnérabilités des images
@@ -69,26 +81,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Construction des images de service
-        shell: bash
-        run: docker compose --profile api build scoring-api
+      - name: Construction de l'image de service
+        run: |
+          docker compose --profile api build scoring-api
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # Une image de production qui embarque une bibliothèque vulnérable connue ne doit pas
-      # atteindre `main`. Seules les vulnérabilités critiques bloquent : au-delà, la chaîne
-      # échouerait en permanence sur des alertes que personne ne peut corriger, et plus
-      # personne ne la regarderait.
-      - name: Analyse Trivy (images)
-        shell: bash
+      # atteindre `main`. Seules les vulnérabilités critiques **et corrigeables** bloquent :
+      # au-delà, la chaîne échouerait en permanence sur des alertes que personne ne peut
+      # corriger, et plus personne ne la regarderait.
+      - name: Analyse Trivy (image de service)
         run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
-            aquasec/trivy:0.69.1 image --scanners vuln --severity CRITICAL \
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock `
+            aquasec/trivy:0.69.1 image --scanners vuln --severity CRITICAL `
             --exit-code 1 --ignore-unfixed --no-progress ondine/api:local
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # Un secret commis dans le dépôt ne s'efface pas d'un `git revert` : il est vérifié à
       # chaque modification, sur l'historique complet.
       - name: Recherche de secrets commis
-        shell: bash
         run: |
-          docker run --rm -v "$PWD:/depot:ro" zricethezav/gitleaks:v8.30.1 \
-            detect --source /depot --no-banner --redact
+          docker run --rm -v "${{ github.workspace }}:/depot:ro" `
+            zricethezav/gitleaks:v8.30.1 detect --source /depot --no-banner --redact
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

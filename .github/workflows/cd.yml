@@ -1,8 +1,12 @@
 name: Livraison continue
 
-# Un `push` sur `main` redéploie réellement la plateforme sur la machine de production, et
-# **repose la version précédente** si la mise en service ne répond pas. Aucune étape manuelle :
-# construction, migrations, bascule, vérification et retour arrière sont dans le flux.
+# Un `push` sur `main` redéploie réellement la plateforme, et **repose la version précédente**
+# si la mise en service ne répond pas. Aucune étape manuelle : construction, migrations,
+# bascule, vérification et retour arrière sont dans le flux.
+#
+# Le déploiement se fait depuis le code fraîchement extrait, mais vise la **même** pile :
+# le nom de projet Compose (`name: ondine`) est déclaré dans `docker-compose.yml`, donc les
+# conteneurs et les volumes existants sont mis à jour, jamais dupliqués.
 on:
   push:
     branches: [main]
@@ -18,34 +22,59 @@ concurrency:
   group: cd-production
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   deployer:
     name: Mise en service sur la plateforme
     runs-on: [self-hosted, ondine]
     timeout-minutes: 60
-    environment: production
+    env:
+      # Dossier d'installation de la plateforme sur la machine de production : c'est lui qui
+      # détient les secrets. Déclaré en variable de dépôt pour ne pas graver un chemin de
+      # machine dans le flux (Settings → Actions → Variables).
+      ONDINE_INSTALL: ${{ vars.ONDINE_INSTALL || 'C:\Users\honor\Desktop\Soutenance Master\ondine-fraud' }}
     steps:
       - uses: actions/checkout@v5
         with:
-          # L'empreinte du commit devient le nom de version des images : l'historique est
-          # nécessaire pour nommer aussi l'étiquette Git la plus proche.
+          # L'empreinte du commit devient le nom de version des images ; l'historique sert à
+          # nommer aussi l'étiquette Git la plus proche.
           fetch-depth: 0
 
-      # Les secrets ne sont jamais dans le dépôt. Ils vivent dans le `.env` de la machine de
-      # production (créé une fois par `scripts/generate_env.py`, lisible par le seul compte
-      # d'exploitation). Le flux vérifie qu'il est là, sans jamais en afficher le contenu.
-      - name: Vérification des secrets d'exploitation
-        shell: bash
-        run: test -s .env || { echo "::error::.env absent sur la machine de production"; exit 1; }
+      # Les secrets ne sont **jamais** dans le dépôt. Ils vivent dans le `.env` de la machine
+      # de production, créé une fois par `scripts/generate_env.py` et lisible par le seul
+      # compte d'exploitation. Il est copié dans l'espace de travail le temps du déploiement,
+      # sans que son contenu n'apparaisse jamais dans les journaux.
+      - name: Secrets d'exploitation
+        run: |
+          $source = Join-Path $env:ONDINE_INSTALL '.env'
+          if (-not (Test-Path $source)) {
+            Write-Output "::error::.env introuvable dans $env:ONDINE_INSTALL"
+            exit 1
+          }
+          Copy-Item $source '.env' -Force
 
       - name: Mise en service
-        shell: bash
         env:
           ONDINE_BUILD: ${{ github.sha }}
-        run: bash scripts/deployer.sh
-
-      - name: Version déployée
-        shell: bash
         run: |
-          echo "### Version en service" >> "$GITHUB_STEP_SUMMARY"
-          curl -fsS http://localhost:8010/sante >> "$GITHUB_STEP_SUMMARY"
+          # Le déploiement est un script shell et non du YAML : on doit pouvoir le lire, le
+          # relancer et le déboguer sans passer par l'orchestrateur. Sur cette machine
+          # Windows, `bash` désigne celui de WSL — on appelle donc explicitement celui de Git.
+          $bash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+          if (-not (Test-Path $bash)) { Write-Output "::error::Git Bash introuvable"; exit 1 }
+          & $bash scripts/deployer.sh
+          exit $LASTEXITCODE
+
+      - name: Effacement des secrets de l'espace de travail
+        if: always()
+        run: |
+          Remove-Item '.env' -Force -ErrorAction SilentlyContinue
+          exit 0
+
+      - name: Version en service
+        run: |
+          $sante = curl.exe -fsS http://localhost:8010/sante
+          "### Version en service`n`n``````json`n$sante`n``````" >> $env:GITHUB_STEP_SUMMARY

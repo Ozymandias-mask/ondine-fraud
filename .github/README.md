@@ -61,8 +61,10 @@ Un déploiement qui ne sait pas revenir en arrière n'est pas un déploiement, c
 ## Secrets et moindre privilège
 
 - Aucun secret dans le dépôt. Ils vivent dans le `.env` de la machine de production, créé une
-  fois par `python scripts/generate_env.py`, jamais versionné (`.gitignore`), vérifié présent
-  par le flux mais **jamais affiché**.
+  fois par `python scripts/generate_env.py` et jamais versionné (`.gitignore`). Le flux le
+  copie dans son espace de travail le temps du déploiement, **sans jamais en afficher le
+  contenu**, et l'efface ensuite quelle que soit l'issue. Le dossier d'installation est une
+  variable de dépôt (`ONDINE_INSTALL`), pas un chemin gravé dans le flux.
 - `permissions: contents: read` sur les deux flux : ils lisent le dépôt et rien d'autre.
 - Les journaux de flux ne contiennent ni mot de passe ni donnée personnelle ; les commandes
   qui liraient des données de production n'y figurent pas.
@@ -82,8 +84,19 @@ Deux points qui comptent :
 - l'installer en service pour qu'il redémarre avec la machine (`./svc.sh install` puis
   `./svc.sh start`, ou `.\svc.cmd install` sous Windows).
 
-Le runner a besoin de `docker`, `git` et `bash` (fourni par Git pour Windows) dans son
-`PATH`. Rien d'autre : tout le reste tourne en conteneur.
+Le runner a besoin de `docker` et `git` dans son `PATH`. Rien d'autre : tout le reste tourne
+en conteneur.
+
+Deux pièges rencontrés, qui valent d'être connus :
+
+- **`shell: bash` désigne le bash de WSL**, pas celui de Git : `C:\Windows\System32\bash.exe`
+  passe avant dans le `PATH`, et il ne sait pas lire les chemins Windows que le runner lui
+  transmet. Les étapes sont donc en PowerShell, et `deployer.sh` est appelé explicitement par
+  le bash de Git.
+- **Ne pas installer le runner en service** sur ce poste : le service tourne sous
+  `NT AUTHORITY\NETWORK SERVICE`, qui n'a pas accès à Docker Desktop. Il est lancé au premier
+  plan (`.\run.cmd`), ce qui a l'avantage de rendre les exécutions visibles pendant une
+  démonstration.
 
 ## Limites assumées
 
