@@ -22,6 +22,7 @@ journal dédiés) au lieu d'échouer. Ce comportement est configurable (`ONDINE_
 from __future__ import annotations
 
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -45,6 +46,9 @@ from .store import OnlineStore, State
 from .ui import alert_page, queue_page
 
 logger = logging.getLogger(__name__)
+
+# Empreinte Git inscrite dans l'image à la construction (chaîne de livraison continue).
+BUILD = os.environ.get("ONDINE_BUILD", "inconnu")
 
 SCORED = Counter("scoring_requests_total", "Demandes d'autorisation scorées", ["decision"])
 DEGRADED = Counter("scoring_degraded_total", "Décisions rendues sans magasin en ligne", ["cause"])
@@ -185,6 +189,7 @@ def _register_routes(application: FastAPI) -> None:
         # sienne. C'est `/pret` qui vérifie les dépendances.
         return Health(
             statut="en vie",
+            build=BUILD,
             modele=service.ml.model_name if service.model else None,
             modele_version=service.version if service.model else None,
             seuil=service.threshold if service.model else None,

@@ -23,6 +23,11 @@ RUN pip install --no-cache-dir --no-deps /opt/ondine/pipelines /opt/ondine/ml /o
     && useradd --create-home --uid 10002 ondine \
     && cp -r /root/.duckdb /home/ondine/.duckdb && chown -R ondine:ondine /home/ondine
 
+# Empreinte du code construit, inscrite par la chaîne de livraison continue : l'API la
+# renvoie sur /sante. Savoir *quel* code répond est la première question d'une astreinte.
+ARG ONDINE_BUILD=inconnu
+ENV ONDINE_BUILD=${ONDINE_BUILD}
+
 # Moindre privilège : le service ne tourne pas en administrateur.
 USER ondine
 EXPOSE 8000

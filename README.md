@@ -102,6 +102,27 @@ git pull ..\ondine-fraud-historique.bundle main
 Les identifiants de Kafka UI et Grafana sont dans `.env`. Tableau de bord Grafana :
 **Ondine > Ondine - Flux temps réel et plateforme**.
 
+## Intégration et livraison continues
+
+Un `push` sur `main` **redéploie réellement** la plateforme, et repose la version précédente
+si la mise en service ne répond pas. Les flux GitHub Actions tournent sur un runner
+auto-hébergé installé sur la machine qui porte la plateforme : un déploiement qu'on ne peut
+pas vérifier sur la vraie plateforme n'est pas un déploiement.
+
+```powershell
+# Ce que vérifie l'intégration continue, reproductible à la main :
+docker compose --profile pipelines build pipelines-cli
+docker compose --profile ci build tests
+docker compose --profile ci run --rm --no-deps --entrypoint ruff tests check .
+docker compose --profile ci run --rm tests            # tous les tests, base jetable
+docker compose --profile ci down -v postgres-ci
+
+# Ce que fait un déploiement (retour arrière automatique compris) :
+bash scripts/deployer.sh
+```
+
+Détail, installation du runner et limites assumées : [`.github/README.md`](.github/README.md).
+
 ## Arborescence
 
 ```

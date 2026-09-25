@@ -1,0 +1,51 @@
+name: Livraison continue
+
+# Un `push` sur `main` redéploie réellement la plateforme sur la machine de production, et
+# **repose la version précédente** si la mise en service ne répond pas. Aucune étape manuelle :
+# construction, migrations, bascule, vérification et retour arrière sont dans le flux.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Jamais deux déploiements en même temps, et aucune annulation en cours de bascule : une
+# mise en service interrompue au milieu laisse la plateforme dans un état indéterminé.
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+jobs:
+  deployer:
+    name: Mise en service sur la plateforme
+    runs-on: [self-hosted, ondine]
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # L'empreinte du commit devient le nom de version des images : l'historique est
+          # nécessaire pour nommer aussi l'étiquette Git la plus proche.
+          fetch-depth: 0
+
+      # Les secrets ne sont jamais dans le dépôt. Ils vivent dans le `.env` de la machine de
+      # production (créé une fois par `scripts/generate_env.py`, lisible par le seul compte
+      # d'exploitation). Le flux vérifie qu'il est là, sans jamais en afficher le contenu.
+      - name: Vérification des secrets d'exploitation
+        shell: bash
+        run: test -s .env || { echo "::error::.env absent sur la machine de production"; exit 1; }
+
+      - name: Mise en service
+        shell: bash
+        env:
+          ONDINE_BUILD: ${{ github.sha }}
+        run: bash scripts/deployer.sh
+
+      - name: Version déployée
+        shell: bash
+        run: |
+          echo "### Version en service" >> "$GITHUB_STEP_SUMMARY"
+          curl -fsS http://localhost:8010/sante >> "$GITHUB_STEP_SUMMARY"

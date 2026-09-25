@@ -1,0 +1,94 @@
+name: Intégration continue
+
+# Toute modification est vérifiée avant d'atteindre `main` : style, erreurs probables, tests
+# automatisés, règles d'alerte, configuration de la plateforme et vulnérabilités des images.
+# Rien n'est déployé ici — c'est le rôle de `cd.yml`.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# Moindre privilège : le flux lit le dépôt, il n'y écrit rien et ne publie aucun paquet.
+permissions:
+  contents: read
+
+# Une seule exécution par branche : la machine d'intégration est celle qui porte la
+# production, ses ressources ne sont pas extensibles.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualite:
+    name: Style, tests et configuration
+    runs-on: [self-hosted, ondine]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      # Les tests tournent dans l'image des traitements : mêmes versions de bibliothèques
+      # qu'en production. Un environnement Python reconstruit sur la machine d'intégration
+      # ne le garantirait pas, et c'est précisément là que se cachent les écarts.
+      - name: Construction de l'image de test
+        shell: bash
+        run: |
+          docker compose --profile pipelines build pipelines-cli
+          docker compose --profile ci build tests
+
+      - name: Style et erreurs probables (ruff)
+        shell: bash
+        run: |
+          docker compose --profile ci run --rm --no-deps --entrypoint ruff tests check .
+          docker compose --profile ci run --rm --no-deps --entrypoint ruff tests format --check .
+
+      - name: Configuration de la plateforme
+        shell: bash
+        run: |
+          docker compose config --quiet
+          docker run --rm -v "$PWD/infra/prometheus:/regles:ro" \
+            --entrypoint promtool prom/prometheus:v3.14.0 check rules /regles/alerts.yml
+
+      # Les tests construisent de vraies données avec le simulateur, les font passer par les
+      # vrais traitements jusqu'à la couche gold, entraînent un modèle et vérifient l'API.
+      # La base est jetable et en mémoire : l'intégration ne touche jamais celle qui porte
+      # les données de production.
+      - name: Tests automatisés
+        shell: bash
+        run: docker compose --profile ci run --rm tests
+
+      - name: Arrêt de la base jetable
+        if: always()
+        shell: bash
+        run: docker compose --profile ci down --volumes --remove-orphans postgres-ci || true
+
+  securite:
+    name: Vulnérabilités des images
+    runs-on: [self-hosted, ondine]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Construction des images de service
+        shell: bash
+        run: docker compose --profile api build scoring-api
+
+      # Une image de production qui embarque une bibliothèque vulnérable connue ne doit pas
+      # atteindre `main`. Seules les vulnérabilités critiques bloquent : au-delà, la chaîne
+      # échouerait en permanence sur des alertes que personne ne peut corriger, et plus
+      # personne ne la regarderait.
+      - name: Analyse Trivy (images)
+        shell: bash
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            aquasec/trivy:0.69.1 image --scanners vuln --severity CRITICAL \
+            --exit-code 1 --ignore-unfixed --no-progress ondine/api:local
+
+      # Un secret commis dans le dépôt ne s'efface pas d'un `git revert` : il est vérifié à
+      # chaque modification, sur l'historique complet.
+      - name: Recherche de secrets commis
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/depot:ro" zricethezav/gitleaks:v8.30.1 \
+            detect --source /depot --no-banner --redact

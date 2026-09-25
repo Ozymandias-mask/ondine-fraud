@@ -1,0 +1,9 @@
+# Outillage de test et de qualité, figé : la chaîne d'intégration continue doit donner le
+# même verdict aujourd'hui et dans six mois. Ces paquets n'entrent dans aucune image de
+# production — seulement dans l'image de test (`infra/ci/Dockerfile`).
+pytest==9.1.1
+ruff==0.16.7
+# Doublure Redis : les tests de l'API ne dépendent pas d'un serveur.
+fakeredis==2.38.0
+# Client HTTP de `fastapi.testclient`.
+httpx==0.28.1

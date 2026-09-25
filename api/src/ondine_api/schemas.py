@@ -72,6 +72,10 @@ class Health(BaseModel):
     """État de l'API : modèle chargé, magasin en ligne joignable."""
 
     statut: str
+    # Version du code déployé (empreinte Git inscrite à la construction de l'image) : savoir
+    # *quel* code répond est la première question d'une astreinte, et la seule que les
+    # journaux ne répondent pas toujours.
+    build: str = "inconnu"
     modele: str | None = None
     modele_version: str | None = None
     seuil: float | None = None

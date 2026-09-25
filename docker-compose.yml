@@ -573,7 +573,12 @@ services:
           memory: 3500M
 
   scoring-api:
-    build: {context: ., dockerfile: api/Dockerfile}
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+      # Renseigné par la chaîne de livraison continue ; « inconnu » pour une construction
+      # faite à la main sur un poste.
+      args: {ONDINE_BUILD: "${ONDINE_BUILD:-inconnu}"}
     image: ondine/api:local
     profiles: [api]
     restart: unless-stopped
@@ -751,6 +756,50 @@ services:
       resources:
         limits:
           memory: 12G
+
+  # ------------------------------------------- Tests automatisés (profil ci, chaîne GitHub)
+  # Une base jetable, en mémoire : les tests créent et suppriment des bases entières, ils ne
+  # doivent jamais le faire sur l'instance qui porte les données de production.
+  postgres-ci:
+    image: postgres:17.11-alpine
+    profiles: [ci]
+    restart: "no"
+    networks: [ondine]
+    environment:
+      POSTGRES_USER: ci
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: postgres
+    tmpfs: ["/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ci"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Les tests tournent sur l'image des traitements : mêmes versions de bibliothèques qu'en
+  # production, ce qu'un environnement Python reconstruit sur la machine d'intégration ne
+  # garantirait pas.
+  tests:
+    build:
+      context: .
+      dockerfile: infra/ci/Dockerfile
+      args: {BASE: "ondine/pipelines:local"}
+    image: ondine/tests:local
+    profiles: [ci]
+    restart: "no"
+    networks: [ondine]
+    environment:
+      TEST_PG_ADMIN_DSN: postgresql://ci:ci@postgres-ci:5432/postgres
+      PSEUDONYMISATION_KEY: cle-de-test-ci
+      DUCKDB_THREADS: "2"
+      DUCKDB_MEMORY_LIMIT: 2GB
+    volumes: ["./:/depot"]
+    depends_on:
+      postgres-ci: {condition: service_healthy}
+    deploy:
+      resources:
+        limits:
+          memory: 6G
 
 networks:
   ondine:
