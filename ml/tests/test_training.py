@@ -372,3 +372,32 @@ def test_drift_is_measured_against_the_period_the_champion_was_validated_on(
     # Le même mois que la référence ne peut pas dériver de lui-même : garde-fou du calcul.
     identique = measure(lake, ml_settings, "champion", current=ml_settings.test_bounds[:7])
     assert identique.score_psi < PSI_DRIFT
+
+
+def test_the_drift_measurement_runs_under_the_pipeline_account(lake):
+    """Les droits sont vérifiés sous le *vrai* compte, pas sous l'administrateur des tests.
+
+    C'est le seul défaut de cette solution qui soit passé deux fois en production : le code
+    marche en test parce que les tests se connectent en administrateur, et échoue en
+    exploitation parce que le compte des traitements n'a pas le droit. Ici, on prend
+    l'identité de `ingestion_app` avant d'exécuter exactement les requêtes du module.
+    """
+    import psycopg
+    from ondine_ml.drift import DriftReport
+
+    rapport = DriftReport(version="test", reference="2025-01..2025-01", current="2025-02")
+    with psycopg.connect(lake.pg_dsn, autocommit=True) as connection:
+        connection.execute("SET ROLE ingestion_app")
+        connection.execute(
+            "SELECT count(*) FILTER (WHERE status <> 'a_traiter') FROM ops.alerts"
+            " WHERE scored_at >= now() - make_interval(days => 30)"
+        )
+        connection.execute(
+            """
+            INSERT INTO ops.model_drift
+                (model_version, reference_period, current_period, verdict, score_psi,
+                 feature_psi_max, details)
+            VALUES (%s, %s, %s, 'stable', 0, 0, '{}'::jsonb)
+            """,
+            (rapport.version, rapport.reference, rapport.current),
+        )

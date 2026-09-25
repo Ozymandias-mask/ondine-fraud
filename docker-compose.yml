@@ -563,10 +563,15 @@ services:
       --maxmemory 3gb --maxmemory-policy noeviction
     volumes: ["redis-data:/data"]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 15s
+      # `redis-cli ping` répond aussi pendant le chargement du journal (« LOADING ») : seul
+      # un vrai PONG signale un magasin utilisable. Au redémarrage, rejouer trente jours
+      # d'historique prend plusieurs minutes — d'où la période de démarrage : sans elle, les
+      # services qui attendent Redis abandonnent avant qu'il ait fini de charger.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 6
+      start_period: 300s
     deploy:
       resources:
         limits:
