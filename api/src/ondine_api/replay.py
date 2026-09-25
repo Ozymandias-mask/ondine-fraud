@@ -17,12 +17,17 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 import redis
-from ondine_pipelines.lake import connect
+from ondine_pipelines.lake import connect, exists, month_glob
 from ondine_pipelines.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+# Nombre de clients préchauffés par requête : borne la mémoire du tri chronologique, sans
+# multiplier les relectures du lac (chaque paquet relit les deux mois concernés).
+CLIENT_BATCH = 5000
 
 # Champs acceptés par l'API : le message d'autorisation, rien de plus.
 FIELDS = (
@@ -80,6 +85,23 @@ class ReplayReport:
         }
 
 
+def _months_files(con, settings: Settings, dataset: str, debut: str, days: int) -> list[str]:
+    """Fichiers bronze des seuls mois couvrant la fenêtre de préchauffage.
+
+    Le lac est partitionné par `year=/month=` : lire tout le jeu de données pour n'en garder
+    que trente jours ferait relire vingt mois à chaque paquet de clients.
+    """
+    fin = datetime.fromisoformat(debut.replace("Z", "+00:00").replace(" ", "T"))
+    debut_fenetre = fin - timedelta(days=days)
+    mois, curseur = [], debut_fenetre.replace(day=1)
+    while curseur <= fin:
+        motif = month_glob(settings, "bronze", dataset, curseur.year, curseur.month)
+        if exists(con, motif):
+            mois.append(motif)
+        curseur = (curseur + timedelta(days=32)).replace(day=1)
+    return mois
+
+
 def warm_store(settings: Settings, store, transactions: list[dict], days: int = 30) -> dict:
     """Préchauffe le magasin en ligne avec l'historique des clients concernés.
 
@@ -100,28 +122,48 @@ def warm_store(settings: Settings, store, transactions: list[dict], days: int = 
             ("transactions", store.record_transaction, "transactions"),
             ("app_events", store.record_event, "evenements"),
         ):
-            pattern = settings.uri("bronze", dataset, "**", "*.parquet")
+            fichiers = _months_files(con, settings, dataset, debut, days)
+            if not fichiers:
+                continue
+            pattern = "[" + ", ".join(f"'{f}'" for f in fichiers) + "]"
             fenetre = (
                 " WHERE client_id = ANY(?) AND event_time < ?::TIMESTAMPTZ"
                 f"   AND event_time >= ?::TIMESTAMPTZ - INTERVAL {int(days)} DAYS"
                 " ORDER BY event_time"
             )
-            # Motif issu de la configuration ; les valeurs passent en paramètres.
-            query = f"SELECT * FROM read_parquet('{pattern}')" + fenetre  # noqa: S608
-            resultat = con.execute(query, [clients, debut, debut])
-            colonnes = [d[0] for d in resultat.description]
-            for ligne in resultat.fetchall():
-                try:
-                    recorder(dict(zip(colonnes, ligne, strict=True)))
-                except redis.exceptions.OutOfMemoryError as error:
-                    raise RuntimeError(
-                        "Le magasin en ligne est plein : il conserve 30 jours d'historique et"
-                        " sa mémoire est dimensionnée pour cela (voir `redis` dans"
-                        " docker-compose.yml). Augmentez `--maxmemory`, ou rejouez moins de"
-                        " transactions. Aucune donnée n'est évincée silencieusement : c'est"
-                        " délibéré, un historique amputé fausserait les variables du modèle."
-                    ) from error
-                lus[cle] += 1
+            # Motifs issus de la configuration ; les valeurs passent en paramètres.
+            query = (
+                f"SELECT * FROM read_parquet({pattern}, union_by_name = true)" + fenetre  # noqa: S608
+            )
+            # Par paquets de clients, et non d'un seul bloc : le tri chronologique porte
+            # sinon sur trente jours de tous les clients à la fois, ce qui dépasse la
+            # mémoire allouée à DuckDB dans l'image de service. Un client entier reste dans
+            # le même paquet, seul découpage qui préserve l'ordre des premières apparitions.
+            for debut_lot in range(0, len(clients), CLIENT_BATCH):
+                lot = clients[debut_lot : debut_lot + CLIENT_BATCH]
+                logger.info(
+                    "Préchauffage %s : clients %d à %d sur %d",
+                    dataset,
+                    debut_lot + 1,
+                    debut_lot + len(lot),
+                    len(clients),
+                )
+                resultat = con.execute(query, [lot, debut, debut])
+                colonnes = [d[0] for d in resultat.description]
+                while lignes := resultat.fetchmany(5000):
+                    for ligne in lignes:
+                        try:
+                            recorder(dict(zip(colonnes, ligne, strict=True)))
+                        except redis.exceptions.OutOfMemoryError as error:
+                            raise RuntimeError(
+                                "Le magasin en ligne est plein : il conserve 30 jours"
+                                " d'historique et sa mémoire est dimensionnée pour cela (voir"
+                                " `redis` dans docker-compose.yml). Augmentez `--maxmemory`, ou"
+                                " rejouez moins de transactions. Aucune donnée n'est évincée"
+                                " silencieusement : c'est délibéré, un historique amputé"
+                                " fausserait les variables du modèle."
+                            ) from error
+                        lus[cle] += 1
     finally:
         con.close()
     logger.info(
@@ -136,7 +178,8 @@ def read_transactions(settings: Settings, month: str, limit: int) -> list[dict]:
     """Lit des messages d'autorisation bruts (couche bronze), dans l'ordre chronologique."""
     con = connect(settings)
     try:
-        pattern = settings.uri("bronze", "transactions", "**", "*.parquet")
+        annee, mois = (int(part) for part in month.split("-"))
+        pattern = month_glob(settings, "bronze", "transactions", annee, mois)
         # Motif et colonnes viennent de la configuration et d'une liste fermée, jamais d'une
         # saisie ; le mois et la limite sont, eux, passés en paramètres.
         describe = f"DESCRIBE SELECT * FROM read_parquet('{pattern}')"  # noqa: S608

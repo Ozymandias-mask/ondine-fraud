@@ -459,15 +459,21 @@ def test_the_interface_neutralises_injected_markup(analyste):
     assert "&lt;script&gt;" in rendu, "la donnée reste visible, sous forme de texte"
 
 
-def test_warming_the_store_gives_the_model_a_real_history(lake, store):
+def test_warming_the_store_gives_the_model_a_real_history(lake, store, monkeypatch):
     """Sans préchauffage, un rejeu part d'un magasin vide et les scores ne valent rien.
 
     Tous les appareils y paraissent neufs et toutes les vélocités valent zéro : le modèle
     voit partout le même profil. Le préchauffage reconstitue l'historique des clients
     concernés, comme le ferait le flux Kafka en production.
     """
+    from ondine_api import replay as rejeu
     from ondine_api.features import compute
     from ondine_api.replay import read_transactions, warm_store
+
+    # Le préchauffage lit les clients par paquets, faute de quoi le tri chronologique de
+    # trente jours dépasse la mémoire allouée à DuckDB dans l'image de service. Un paquet
+    # d'un seul client force ce découpage ici, sur un lac de test forcément petit.
+    monkeypatch.setattr(rejeu, "CLIENT_BATCH", 1)
 
     transactions = read_transactions(lake, "2025-04", 200)
     assert transactions, "le lac de test doit contenir des transactions à rejouer"
