@@ -70,19 +70,18 @@ def test_secrets_never_enter_the_repository():
     assert "cat .env" not in livraison and "Get-Content" not in livraison
 
 
-def test_no_step_relies_on_bash_being_git_bash():
-    """`shell: bash` désigne celui de WSL sur la machine de production, pas celui de Git.
+def test_the_workflows_use_a_shell_the_production_machine_actually_has():
+    """Deux interpréteurs manquent sur la machine de production, et l'échec est muet.
 
-    Le piège est silencieux : le flux démarre, puis chaque étape échoue sans message
-    exploitable parce que WSL ne sait pas lire les chemins Windows que le runner lui passe.
-    Les étapes sont donc en PowerShell, et le script de déploiement appelle explicitement
-    le bash de Git.
+    `bash` y désigne celui de WSL, qui ne sait pas lire les chemins Windows que le runner
+    lui passe ; `pwsh` (PowerShell 7) n'y est pas installé du tout. Seul le PowerShell livré
+    avec Windows est garanti — et le bash de Git, appelé par son chemin.
     """
     for fichier in sorted(FLUX.glob("*.yml")):
         texte = fichier.read_text(encoding="utf-8")
-        assert "shell: bash" not in texte, fichier.name
+        assert "shell: bash" not in texte and "shell: pwsh" not in texte, fichier.name
         flux = yaml.safe_load(texte)
-        assert flux["defaults"]["run"]["shell"] == "pwsh", fichier.name
+        assert flux["defaults"]["run"]["shell"] == "powershell", fichier.name
     assert "Git\\bin\\bash.exe" in (FLUX / "cd.yml").read_text(encoding="utf-8")
 
 

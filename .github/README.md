@@ -93,6 +93,10 @@ Deux pièges rencontrés, qui valent d'être connus :
   passe avant dans le `PATH`, et il ne sait pas lire les chemins Windows que le runner lui
   transmet. Les étapes sont donc en PowerShell, et `deployer.sh` est appelé explicitement par
   le bash de Git.
+- **`shell: pwsh` n'existe pas** sur une installation Windows standard : `pwsh` est
+  PowerShell 7, qui s'installe séparément. Seul `powershell` (5.1, livré avec le système) est
+  garanti. Les deux pièges échouent de la même façon : le flux démarre, puis l'étape s'arrête
+  en quelques secondes sans message exploitable.
 - **Ne pas installer le runner en service** sur ce poste : le service tourne sous
   `NT AUTHORITY\NETWORK SERVICE`, qui n'a pas accès à Docker Desktop. Il est lancé au premier
   plan (`.\run.cmd`), ce qui a l'avantage de rendre les exécutions visibles pendant une

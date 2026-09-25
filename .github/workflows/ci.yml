@@ -19,12 +19,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# La machine d'intégration est sous Windows. `bash` y désigne celui de WSL, qui ne sait pas
-# lire les chemins que le runner lui passe : toutes les étapes sont donc en PowerShell, et
-# les rares scripts en shell sont appelés explicitement par celui de Git (voir `cd.yml`).
+# La machine de production est sous Windows. Deux pièges s'y cachent : `bash` y désigne celui
+# de WSL, qui ne sait pas lire les chemins que le runner lui passe, et `pwsh` (PowerShell 7)
+# n'est pas installé. Les étapes tournent donc sous le PowerShell livré avec Windows, et les
+# rares scripts en shell sont appelés explicitement par le bash de Git.
 defaults:
   run:
-    shell: pwsh
+    shell: powershell
 
 jobs:
   qualite:

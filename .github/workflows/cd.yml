@@ -22,9 +22,13 @@ concurrency:
   group: cd-production
   cancel-in-progress: false
 
+# La machine de production est sous Windows. Deux pièges s'y cachent : `bash` y désigne celui
+# de WSL, qui ne sait pas lire les chemins que le runner lui passe, et `pwsh` (PowerShell 7)
+# n'est pas installé. Les étapes tournent donc sous le PowerShell livré avec Windows, et les
+# rares scripts en shell sont appelés explicitement par le bash de Git.
 defaults:
   run:
-    shell: pwsh
+    shell: powershell
 
 jobs:
   deployer:
@@ -77,4 +81,6 @@ jobs:
       - name: Version en service
         run: |
           $sante = curl.exe -fsS http://localhost:8010/sante
-          "### Version en service`n`n``````json`n$sante`n``````" >> $env:GITHUB_STEP_SUMMARY
+          # `>>` écrit en UTF-16 sous Windows PowerShell : le résumé serait illisible.
+          "### Version en service`n`n``````json`n$sante`n``````" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
