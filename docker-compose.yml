@@ -608,7 +608,11 @@ services:
       ONDINE_API_FAIL_OPEN: "true"
       API_WORKERS: "2"
       DUCKDB_THREADS: "1"
-      DUCKDB_MEMORY_LIMIT: 512MB
+      # DuckDB ne sert **jamais** à décider : le chemin d'une autorisation ne lit que le
+      # magasin en ligne. Ce budget ne vaut donc que pour les commandes d'exploitation de la
+      # même image (`referentials`, `replay`), qui lisent le lac — et 512 Mo n'y suffisaient
+      # pas pour parcourir un mois de transactions sur le stockage objet.
+      DUCKDB_MEMORY_LIMIT: 2GB
     depends_on:
       redis: {condition: service_healthy}
       db-migrate: {condition: service_completed_successfully}
