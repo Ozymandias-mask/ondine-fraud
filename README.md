@@ -7,14 +7,26 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 
 > Toutes les données sont synthétiques. Aucune personne ni aucun établissement réel n'est concerné.
 
-## État d'avancement
+## État du projet
+
+Le projet est **terminé et validé sur la machine de développement**.
 
 | Étape | Contenu | État |
 |---|---|---|
-| 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **fait, validé sur le PC** |
-| 2. Pipelines de données | Ingestion, couches Bronze / Silver / Gold, qualité, pseudonymisation, traçabilité | **en cours** : bronze, silver, gold et flux validés ; orchestration et gouvernance livrées |
-| 3. Modèle et déploiement | Entraînement, API de scoring, explicabilité, dérive, réentraînement, CI/CD | **en cours** : entraînement, suivi MLflow et explicabilité livrés |
-| 4. Plans écrits | Gouvernance, infrastructure, pipeline | à venir |
+| 1. Fondations | Dépôt, infrastructure Docker (Kafka, stockage S3, PostgreSQL, supervision), simulateur de données | **livré** |
+| 2. Pipelines de données | Ingestion lot et flux, couches bronze / silver / gold, 37 contrôles qualité, pseudonymisation, lignage | **livré** — 50,5 M de transactions traitées, recalcul incrémental prouvé |
+| 3. Modèle et mise en service | Entraînement LightGBM, API de décision, explicabilité, mesure de dérive, réentraînement, CI/CD | **livré** — 5,4 ms de latence médiane, chaîne de livraison verte |
+| 4. Plans écrits | Gouvernance, infrastructure, modèle de données, pipeline | **livrés** (hors dépôt, fournis avec le dossier de certification) |
+
+### Chiffres mesurés
+
+| Indicateur | Valeur |
+|---|---|
+| Transactions traitées | 50 506 402 sur 13 mois |
+| Débit du flux absorbé | 313 tx/s en continu, zéro erreur |
+| Latence de décision | 5,4 ms (médiane), 20,9 ms (99ᵉ centile) |
+| Fraudes détectées | 51,5 % des fraudes, 91,2 % d'alertes justes |
+| Coût métier annuel | 7,92 M€, contre 18,06 M€ pour le moteur de règles |
 
 ## Architecture actuelle
 
@@ -45,11 +57,30 @@ la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
 | `pipelines-cli` | traitements batch (profil pipelines) | – | voir `pipelines/README.md` |
 | `airflow-*` | orchestration (profil orchestration) | http://localhost:8081 | comptes nominatifs (admin, consultation), relances automatiques |
 | `mlflow` | suivi des expériences et registre des modèles | http://localhost:5001 | authentification, compte de service distinct, seul détenteur d'une clé S3 pour les artefacts |
-| `redis` | magasin de variables en ligne (profil api) | réseau interne | persistance activée, durées de vie alignées sur les fenêtres du modèle |
+| `redis` | magasin de variables en ligne (profil api) | réseau interne | sans persistance (état dérivé, reconstruit depuis le flux), durées de vie alignées sur les fenêtres du modèle |
 | `scoring-api` | décision de blocage d'un paiement (profil api) | http://localhost:8010/docs | image de service minimale, compte non administrateur, mode dégradé |
 | `online-features` | Kafka → magasin en ligne (profil api) | réseau interne, métriques :9109 | groupe de consommateurs distinct de l'ingestion |
 
-Tous les ports sont liés à `127.0.0.1` : rien n'est exposé sur le réseau local.
+Toutes les interfaces d'administration sont liées à `127.0.0.1`. **Un seul port est exposé sur le réseau : `8010`, celui de l'API de décision** — le seul service qu'un système de paiement doit pouvoir appeler.
+
+## Où se trouve quoi
+
+Le dépôt est organisé par domaine plutôt que par technologie. Correspondance avec une arborescence classique :
+
+| Attendu | Ici | Contenu |
+|---|---|---|
+| `/docker` | `docker-compose.yml`, `*/Dockerfile`, `infra/ci/` | Toute la plateforme est décrite en composition Docker : 20 services, réseaux, volumes, limites mémoire, sondes de santé. C'est l'infrastructure as code du projet. |
+| `/terraform` | *(sans objet)* | La cible est un hébergement sur une machine maîtrisée, pas un fournisseur cloud : il n'y a pas de ressources à provisionner par API. La trajectoire vers un cloud souverain est décrite dans le plan d'infrastructure ; les formats (Parquet, S3, Kafka, PostgreSQL, conteneurs) sont les mêmes de part et d'autre. |
+| `/scripts` | `scripts/` | `deployer.sh` (bascule, sondes, retour arrière), `generate_env.py` (génération des secrets). |
+| `/dags` | `pipelines/dags/` | Quatre chaînes Airflow : ingestion, rafraîchissement du lac, gouvernance, réentraînement du modèle. |
+| `/sql` | `infra/postgres/migrations/` | Neuf migrations numérotées, appliquées une seule fois et dans l'ordre. |
+| `/src`, `/notebooks` | `ml/src/`, `pipelines/src/`, `api/src/`, `simulator/src/` | Code de production uniquement : pas de carnet de notes, les expérimentations sont tracées dans MLflow. |
+| `/tests` | `*/tests/` | Dix-sept fichiers de tests, exécutés dans l'image de production par la chaîne d'intégration. |
+| `/models` | registre MLflow + `mlruns/` | Modèles versionnés avec leurs métriques et leurs rapports (équité, importance des variables). |
+| `/monitoring` | `infra/prometheus/`, `infra/grafana/` | 22 règles d'alerte et deux tableaux de bord, validés comme du code. |
+| `/api` | `api/` | API de décision (FastAPI), écran analyste, rejeu. |
+| `/retrain` | `pipelines/dags/ondine_model_refresh.py`, `ml/src/ondine_ml/drift.py` | Mesure de dérive, décision, entraînement, comparaison, promotion. |
+| `.github/workflows/` | idem | `ci.yml` (intégration) et `cd.yml` (livraison). |
 
 ## Prérequis
 

@@ -1,3 +1,7 @@
+# Tous les fichiers texte sont stockés en LF dans le dépôt, quel que soit le poste.
+# Sans cette ligne, un clone sous Windows fait apparaître tout le dépôt comme modifié.
+* text=auto eol=lf
+
 # Les scripts shell exécutés dans les conteneurs Linux doivent garder des fins de ligne LF,
 # même quand le dépôt est cloné sous Windows (sinon : « /bin/sh^M: not found »).
 *.sh   text eol=lf
