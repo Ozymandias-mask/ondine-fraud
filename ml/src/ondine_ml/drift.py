@@ -155,22 +155,47 @@ def analyst_feedback(dsn: str, days: int = 30) -> dict[str, float]:
     return feedback
 
 
+# Part minimale du volume mensuel median en dessous de laquelle un mois est tenu pour
+# incomplet. Le flux temps reel ecrit en continu : le mois courant n'a que quelques
+# milliers de lignes la ou un mois clos en compte des millions.
+MOIS_COMPLET = 0.5
+
+
+def _dernier_mois_complet(volumes: list[tuple[str, int]]) -> str:
+    """Dernier mois dont le volume est comparable aux autres.
+
+    Prendre simplement le mois le plus recent reviendrait a caler le decoupage glissant
+    sur un mois a peine entame : l'entrainement reclamerait alors une validation sur des
+    mois qui n'existent pas encore. On ecarte donc les mois dont le volume est tres
+    inferieur au volume median.
+    """
+    if not volumes:
+        raise FileNotFoundError("Aucune donnee gold : la derive ne peut pas etre mesuree.")
+    tries = sorted(n for _, n in volumes)
+    median = tries[len(tries) // 2]
+    complets = [mois for mois, n in volumes if n >= median * MOIS_COMPLET]
+    if not complets:
+        raise FileNotFoundError(
+            "Aucun mois complet dans la couche gold : le lac n'a pas fini d'etre construit."
+        )
+    return max(complets)
+
+
 def latest_gold_month(settings: Settings) -> str:
-    """Dernier mois présent dans la couche gold : la période à confronter à l'apprentissage."""
+    """Dernier mois complet de la couche gold : la periode a confronter a l'apprentissage."""
     from ondine_pipelines.lake import connect
 
     from .dataset import gold_pattern
 
     con = connect(settings)
     try:
-        row = con.execute(
-            f"SELECT max(strftime(event_date, '%Y-%m')) FROM read_parquet('{gold_pattern(settings)}')"  # noqa: S608, E501
-        ).fetchone()
+        lignes = con.execute(
+            f"SELECT strftime(event_date, '%Y-%m') AS mois, count(*) AS n "  # noqa: S608
+            f"FROM read_parquet('{gold_pattern(settings)}') GROUP BY 1 ORDER BY 1"  # noqa: E501
+        ).fetchall()
     finally:
         con.close()
-    if not row or not row[0]:
-        raise FileNotFoundError("Aucune donnée gold : la dérive ne peut pas être mesurée.")
-    return str(row[0])
+    return _dernier_mois_complet([(str(m), int(n)) for m, n in lignes])
 
 
 def measure(
