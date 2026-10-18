@@ -1,6 +1,6 @@
 # Ondine Bank – Détection de fraude en temps réel
 
-Projet de fin d'études (RNCP38777, Architecte en intelligence artificielle).
+Projet de fin d'études (RNCP41993, Architecte en intelligence artificielle).
 **Ondine Bank** est une néobanque fictive (1 million de clients) qui veut détecter la fraude
 aux paiements avant l'autorisation, en expliquant chaque décision et en respectant le RGPD,
 la DSP2, la LCB-FT, DORA, l'AI Act et l'ISO 27001.
