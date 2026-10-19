@@ -22,7 +22,7 @@ Le projet est **terminé et validé sur la machine de développement**.
 
 | Indicateur | Valeur |
 |---|---|
-| Transactions traitées | 50 506 402 sur 13 mois |
+| Transactions traitées | 50 506 402 sur 12 mois |
 | Débit du flux absorbé | 313 tx/s en continu, zéro erreur |
 | Latence de décision | 5,4 ms (médiane), 20,9 ms (99ᵉ centile) |
 | Fraudes détectées | 51,5 % des fraudes, 91,2 % d'alertes justes |
