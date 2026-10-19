@@ -102,9 +102,14 @@ def ondine_model_refresh():
     def entrainer(decision: dict) -> dict:
         """Entraîne un candidat sur les derniers mois connus, et l'enregistre comme challenger."""
         import mlflow
+        from ondine_ml.drift import dernier_mois_entrainable
         from ondine_ml.train import train, training_summary
 
-        ml = _ml().rolling(decision["mois"])
+        # Le mois sur lequel la dérive est mesurée n'est pas forcément celui sur lequel on
+        # peut entraîner : le flux temps réel alimente le mois courant alors que l'historique
+        # s'arrête plus tôt, et le découpage glissant exige des mois consécutifs.
+        mois = dernier_mois_entrainable(_settings())
+        ml = _ml().rolling(mois)
         result = train(_settings(), ml, register=True)
         if result.model_version:
             # Le motif du réentraînement reste attaché au modèle : dans six mois, la question
@@ -116,7 +121,7 @@ def ondine_model_refresh():
                 "declencheur",
                 " ; ".join(decision["motifs"])[:480],
             )
-        return {"mois": decision["mois"], "resume": training_summary(result)}
+        return {"mois": mois, "resume": training_summary(result)}
 
     @task(pool=LAKE_POOL)
     def comparer(entrainement: dict) -> dict:

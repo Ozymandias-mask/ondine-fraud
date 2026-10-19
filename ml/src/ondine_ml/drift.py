@@ -160,29 +160,13 @@ def analyst_feedback(dsn: str, days: int = 30) -> dict[str, float]:
 # milliers de lignes la ou un mois clos en compte des millions.
 MOIS_COMPLET = 0.5
 
-
-def _dernier_mois_complet(volumes: list[tuple[str, int]]) -> str:
-    """Dernier mois dont le volume est comparable aux autres.
-
-    Prendre simplement le mois le plus recent reviendrait a caler le decoupage glissant
-    sur un mois a peine entame : l'entrainement reclamerait alors une validation sur des
-    mois qui n'existent pas encore. On ecarte donc les mois dont le volume est tres
-    inferieur au volume median.
-    """
-    if not volumes:
-        raise FileNotFoundError("Aucune donnee gold : la derive ne peut pas etre mesuree.")
-    tries = sorted(n for _, n in volumes)
-    median = tries[len(tries) // 2]
-    complets = [mois for mois, n in volumes if n >= median * MOIS_COMPLET]
-    if not complets:
-        raise FileNotFoundError(
-            "Aucun mois complet dans la couche gold : le lac n'a pas fini d'etre construit."
-        )
-    return max(complets)
+# Longueur minimale d'une série de mois consécutifs pour en tirer un découpage :
+# trois mois de test, un de validation, au moins un d'apprentissage.
+MOIS_CONSECUTIFS_MINIMUM = 5
 
 
-def latest_gold_month(settings: Settings) -> str:
-    """Dernier mois complet de la couche gold : la periode a confronter a l'apprentissage."""
+def _volumes_gold(settings: Settings) -> list[tuple[str, int]]:
+    """Nombre de lignes de la couche gold, mois par mois."""
     from ondine_pipelines.lake import connect
 
     from .dataset import gold_pattern
@@ -195,7 +179,78 @@ def latest_gold_month(settings: Settings) -> str:
         ).fetchall()
     finally:
         con.close()
-    return _dernier_mois_complet([(str(m), int(n)) for m, n in lignes])
+    return [(str(m), int(n)) for m, n in lignes]
+
+
+def _mois_complets(volumes: list[tuple[str, int]]) -> list[str]:
+    """Mois dont le volume est comparable aux autres, dans l'ordre chronologique.
+
+    Le flux temps réel écrit en continu : le mois courant n'a que quelques milliers de
+    lignes là où un mois clos en compte des millions. Les retenir tous reviendrait à caler
+    les calculs sur un mois à peine entamé.
+    """
+    if not volumes:
+        raise FileNotFoundError("Aucune donnée gold : la dérive ne peut pas être mesurée.")
+    tries = sorted(n for _, n in volumes)
+    median = tries[len(tries) // 2]
+    complets = sorted(mois for mois, n in volumes if n >= median * MOIS_COMPLET)
+    if not complets:
+        raise FileNotFoundError(
+            "Aucun mois complet dans la couche gold : le lac n'a pas fini d'être construit."
+        )
+    return complets
+
+
+def _dernier_mois_complet(volumes: list[tuple[str, int]]) -> str:
+    """Dernier mois dont le volume est comparable aux autres."""
+    return _mois_complets(volumes)[-1]
+
+
+def _mois_suivant(mois: str) -> str:
+    index = int(mois[:4]) * 12 + int(mois[5:7])
+    return f"{index // 12}-{index % 12 + 1:02d}"
+
+
+def _series_continues(mois: list[str]) -> list[list[str]]:
+    """Découpe une liste de mois en séries de mois consécutifs."""
+    series: list[list[str]] = []
+    for m in mois:
+        if series and m == _mois_suivant(series[-1][-1]):
+            series[-1].append(m)
+        else:
+            series.append([m])
+    return series
+
+
+def latest_gold_month(settings: Settings) -> str:
+    """Dernier mois complet de la couche gold : la période à confronter à l'apprentissage."""
+    return _dernier_mois_complet(_volumes_gold(settings))
+
+
+def dernier_mois_entrainable(
+    settings: Settings, minimum: int = MOIS_CONSECUTIFS_MINIMUM
+) -> str:
+    """Dernier mois sur lequel un découpage glissant tient debout.
+
+    Le mois le plus récent de la couche gold n'est pas forcément découpable : le flux temps
+    réel alimente le mois courant alors que l'historique chargé par lots s'arrête des mois
+    plus tôt. Un découpage finissant sur ce mois-là réclamerait une validation et un test
+    dans l'intervalle vide, et l'entraînement échouerait — faute de données, pas faute de
+    code. On retient donc la fin de la dernière série de mois consécutifs assez longue pour
+    porter un apprentissage, une validation et un test.
+
+    Le mois de la dérive, lui, reste le plus récent : c'est bien sur les données fraîches
+    qu'il faut mesurer l'usure du modèle, même si l'on ne peut pas encore y entraîner.
+    """
+    series = _series_continues(_mois_complets(_volumes_gold(settings)))
+    assez = [s for s in series if len(s) >= minimum]
+    if not assez:
+        longueurs = ", ".join(f"{s[0]}..{s[-1]} ({len(s)} mois)" for s in series)
+        raise FileNotFoundError(
+            f"Aucune série de {minimum} mois consécutifs dans la couche gold "
+            f"[{longueurs}] : le découpage glissant ne peut pas être construit."
+        )
+    return assez[-1][-1]
 
 
 def measure(
